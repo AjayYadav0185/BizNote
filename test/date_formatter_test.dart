@@ -22,8 +22,9 @@ void main() {
       expect(DateFormatter.parseFromStorage(stored), moment);
       // Chronological string ordering is what the SQL ORDER BY relies on.
       expect(
-        DateFormatter.formatForStorage(DateTime(2026, 9, 23, 9, 0)),
-        lessThan(DateFormatter.formatForStorage(DateTime(2026, 9, 23, 12, 0))),
+        DateFormatter.formatForStorage(DateTime(2026, 9, 23, 9, 0))
+            .compareTo(DateFormatter.formatForStorage(DateTime(2026, 9, 23, 12, 0))),
+        isNegative,
       );
     });
 

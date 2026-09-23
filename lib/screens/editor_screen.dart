@@ -36,6 +36,7 @@ class _EditorScreenState extends State<EditorScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
   bool _isDirty = false;
+  bool _hasSaved = false;
   String _updatedAtLabel = '';
 
   @override
@@ -102,8 +103,16 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   /// Commits title + body to the database.
+  ///
+  /// The commit is idempotent for the lifetime of this screen (_hasSaved): a new
+  /// note must never be inserted twice when "Done" pops the route and the pop
+  /// callback runs the auto-save as well. Editing the tracked note by hand is
+  /// allowed, but the background loop owns it and will refresh it again.
   Future<void> _save({bool popAfterSave = false}) async {
-    if (_isSaving) {
+    if (_isSaving || _hasSaved) {
+      if (popAfterSave && mounted) {
+        Navigator.of(context).pop();
+      }
       return;
     }
 
@@ -114,6 +123,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
     // Never create empty notes, and never issue a pointless UPDATE.
     if ((isNewNote && isEmpty) || (!isNewNote && !_isDirty)) {
+      _hasSaved = true;
       if (popAfterSave && mounted) {
         Navigator.of(context).pop();
       }
@@ -128,6 +138,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _isSaving = false;
 
     if (saved) {
+      _hasSaved = true;
       _isDirty = false;
       _updatedAtLabel = DateFormatter.formatFullFromStorage(
         DateFormatter.formatForStorage(DateTime.now()),
