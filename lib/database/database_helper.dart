@@ -1,8 +1,8 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
+import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart' as web;
 
 import '../models/note.dart';
 import '../utils/date_formatter.dart';
@@ -23,6 +23,39 @@ class DatabaseHelper {
   static const String _tableName = Note.tableName;
 
   static Database? _database;
+  static bool _factoryInitialized = false;
+
+  /// Must be called once from `main()` before any database access.
+  ///
+  /// Plain `sqflite` only works on Android/iOS (method channels). On
+  /// macOS/Windows/Linux we switch the global `databaseFactory` to
+  /// `sqflite_common_ffi`, and on web to `sqflite_ffi_web`. Without this,
+  /// every `openDatabase`/`getDatabasesPath` call throws
+  /// `MissingPluginException`, which is exactly why "save does nothing and
+  /// the list stays empty" when the app is run on desktop/Chrome.
+  static Future<void> ensureInitialized() async {
+    if (_factoryInitialized) {
+      return;
+    }
+    _factoryInitialized = true;
+    if (kIsWeb) {
+      databaseFactory = web.databaseFactoryFfiWeb;
+    } else {
+      switch (defaultTargetPlatform) {
+        case TargetPlatform.windows:
+        case TargetPlatform.linux:
+        case TargetPlatform.macOS:
+          ffi.sqfliteFfiInit();
+          databaseFactory = ffi.databaseFactoryFfi;
+          break;
+        case TargetPlatform.android:
+        case TargetPlatform.iOS:
+        case TargetPlatform.fuchsia:
+          break;
+      }
+    }
+    // Android/iOS keep the default method-channel factory.
+  }
 
   /// Private constructor: use [instance] (UI isolate) or the static helpers
   /// (background isolate).
@@ -317,7 +350,17 @@ class DatabaseHelper {
   }
 
   /// True when the database file already exists on disk.
+  /// On web there is no file system handle, so report whether the cached
+  /// connection has been opened instead. Kept for diagnostics/tests.
   Future<bool> databaseExists() async {
-    return File(await databaseFilePath()).exists();
+    if (kIsWeb) {
+      return _database != null;
+    }
+    try {
+      final String path = await databaseFilePath();
+      return await databaseFactory.databaseExists(path);
+    } catch (_) {
+      return _database != null;
+    }
   }
 }

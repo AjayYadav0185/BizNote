@@ -104,12 +104,18 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// Commits title + body to the database.
   ///
-  /// The commit is idempotent for the lifetime of this screen (_hasSaved): a new
-  /// note must never be inserted twice when "Done" pops the route and the pop
-  /// callback runs the auto-save as well. Editing the tracked note by hand is
-  /// allowed, but the background loop owns it and will refresh it again.
+  /// The commit is idempotent for the lifetime of this screen ([_hasSaved]): a
+  /// new note must never be inserted twice. The text is snapshot into local
+  /// variables *before* the first `await` so the save never touches the
+  /// (possibly disposed) controllers after the database write completes.
+  /// When [popAfterSave] is true (the "Done" button) the route is popped only
+  /// after the write has finished; if the write fails the editor stays open
+  /// and shows the error instead of silently dropping the note.
   Future<void> _save({bool popAfterSave = false}) async {
-    if (_isSaving || _hasSaved) {
+    if (_isSaving) {
+      return;
+    }
+    if (_hasSaved) {
       if (popAfterSave && mounted) {
         Navigator.of(context).pop();
       }
@@ -131,11 +137,22 @@ class _EditorScreenState extends State<EditorScreen> {
     }
 
     _isSaving = true;
-    final Note draft = (_note ??
-            Note(title: title, content: body, updatedAt: ''))
-        .copyWith(title: title, content: body);
-    final bool saved = await _provider.saveNote(draft);
-    _isSaving = false;
+    if (mounted) {
+      setState(() {});
+    }
+    bool saved = false;
+    try {
+      final Note draft = (_note ??
+              Note(title: title, content: body, updatedAt: ''))
+          .copyWith(title: title, content: body);
+      saved = await _provider.saveNote(draft);
+    } finally {
+      _isSaving = false;
+    }
+
+    if (!mounted) {
+      return;
+    }
 
     if (saved) {
       _hasSaved = true;
@@ -143,22 +160,65 @@ class _EditorScreenState extends State<EditorScreen> {
       _updatedAtLabel = DateFormatter.formatFullFromStorage(
         DateFormatter.formatForStorage(DateTime.now()),
       );
+      setState(() {});
+      if (popAfterSave) {
+        Navigator.of(context).pop();
+      }
+    } else {
+      setState(() {});
+      if (popAfterSave) {
+        await _showSaveErrorDialog();
+      } else {
+        debugPrint('[Editor] auto-save failed; keeping the editor open');
+      }
     }
+  }
 
-    if (popAfterSave && mounted) {
-      Navigator.of(context).pop();
+  /// Informs the user that the note could not be written instead of losing it.
+  Future<void> _showSaveErrorDialog() async {
+    if (!mounted) {
+      return;
     }
+    await showCupertinoDialog<void>(
+      context: context,
+      builder: (BuildContext context) => CupertinoAlertDialog(
+        title: const Text('Could not save note'),
+        content: const Padding(
+          padding: EdgeInsets.only(top: 8),
+          child: Text(
+            'The note could not be written to the database. '
+            'Please try again.',
+          ),
+        ),
+        actions: <Widget>[
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return PopScope<Object?>(
-      canPop: true,
-      onPopInvokedWithResult: (bool didPop, Object? result) {
-        // Back swipe / back button: persist whatever the user typed.
-        if (didPop) {
-          unawaited(_save());
+      // While a save is in flight, block the pop so the write always finishes
+      // before the route (and its controllers) goes away. The framework
+      // re-invokes the callback once the user tries again.
+      canPop: !_isSaving,
+      onPopInvokedWithResult: (bool didPop, Object? result) async {
+        // Back swipe / back button: persist whatever the user typed *before*
+        // leaving. Awaiting the save first guarantees the new note reaches
+        // SQLite before the list rebuilds.
+        if (!didPop) {
+          return;
         }
+        if (_hasSaved || _isSaving) {
+          return;
+        }
+        await _save();
       },
       child: _buildScaffold(),
     );
@@ -175,10 +235,10 @@ class _EditorScreenState extends State<EditorScreen> {
         trailing: CupertinoButton(
           minimumSize: Size.zero,
           padding: EdgeInsets.zero,
-          onPressed: () => _save(popAfterSave: true),
-          child: const Text(
-            'Done',
-            style: TextStyle(
+          onPressed: _isSaving ? null : () => _save(popAfterSave: true),
+          child: Text(
+            _isSaving ? 'Saving…' : 'Done',
+            style: const TextStyle(
               fontSize: 17,
               fontWeight: FontWeight.w600,
               color: CupertinoColors.systemBlue,

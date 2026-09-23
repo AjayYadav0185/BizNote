@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
@@ -65,7 +63,11 @@ class LocationService {
   ///
   /// Returns `true` when at least `whileInUse` access is available.
   static Future<bool> ensureForegroundPermission() async {
-    if (!Platform.isAndroid && !Platform.isIOS) {
+    // Background/location plugins are mobile-only; on desktop/web there is
+    // nothing to request, so skip instead of throwing.
+    if (kIsWeb ||
+        (defaultTargetPlatform != TargetPlatform.android &&
+            defaultTargetPlatform != TargetPlatform.iOS)) {
       return false;
     }
     if (!await isServiceEnabled()) {

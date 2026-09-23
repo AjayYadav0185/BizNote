@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:provider/provider.dart';
 
 import 'providers/note_provider.dart';
+import 'database/database_helper.dart';
 import 'screens/home_screen.dart';
 import 'services/background_service.dart';
 import 'services/location_service.dart';
@@ -10,9 +11,18 @@ import 'services/location_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Desktop/web need an FFI-backed sqlite factory, otherwise every database
+  // call fails silently (caught + debugPrint) and no note is ever saved.
+  await DatabaseHelper.ensureInitialized();
+
   // Registers the Dart entry points of the persistent service. This has to run
   // before `runApp` so the native side always holds the newest callbacks.
-  await initializeBackgroundService();
+  // The background service is only supported on Android/iOS.
+  try {
+    await initializeBackgroundService();
+  } catch (error) {
+    debugPrint('[App] background service unavailable: $error');
+  }
 
   runApp(const BizNoteApp());
 }

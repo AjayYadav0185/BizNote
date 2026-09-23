@@ -21,6 +21,9 @@ dependencies:
   geolocator: ^14.0.3
   # Persistent foreground service on Android + BGTaskScheduler on iOS.
   flutter_background_service: ^5.1.0
+  sqflite_common_ffi: ^2.4.3
+  sqflite_common_ffi_web: ^1.2.0
+  path_provider: ^2.1.6
 
 dev_dependencies:
   flutter_test:

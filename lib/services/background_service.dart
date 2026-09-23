@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
@@ -89,7 +89,7 @@ Future<void> onStart(ServiceInstance service) async {
     debugPrint('[BG] Android foreground service started');
   }
 
-  if (Platform.isIOS) {
+  if (defaultTargetPlatform == TargetPlatform.iOS && !kIsWeb) {
     _startIosKeepAlive();
   }
 
