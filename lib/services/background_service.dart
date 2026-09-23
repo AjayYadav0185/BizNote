@@ -11,6 +11,18 @@ import '../models/note.dart';
 import '../utils/date_formatter.dart';
 import 'location_service.dart';
 
+/// True when the platform can host the persistent location tracker.
+///
+/// `flutter_background_service` - and with it the "update this note every
+/// 15 minutes" feature - only exists on Android and iOS. Everywhere else it
+/// throws `FlutterBackgroundService is currently supported for Android and iOS
+/// Platform only`, so the app must not try to reach it there (the seeded
+/// tracker note then simply stays a normal, editable note).
+bool get isBackgroundTrackingSupported =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS);
+
 /// Method names exchanged between the UI isolate and the service isolate.
 class BackgroundServiceMethod {
   /// `service -> UI`: the tracked note was written, the UI should re-read it.

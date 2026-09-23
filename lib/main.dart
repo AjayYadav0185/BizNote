@@ -17,11 +17,13 @@ Future<void> main() async {
 
   // Registers the Dart entry points of the persistent service. This has to run
   // before `runApp` so the native side always holds the newest callbacks.
-  // The background service is only supported on Android/iOS.
-  try {
-    await initializeBackgroundService();
-  } catch (error) {
-    debugPrint('[App] background service unavailable: $error');
+  // Android/iOS only: elsewhere the plugin throws instead of starting anything.
+  if (isBackgroundTrackingSupported) {
+    try {
+      await initializeBackgroundService();
+    } catch (error) {
+      debugPrint('[App] background service unavailable: $error');
+    }
   }
 
   runApp(const BizNoteApp());
@@ -61,6 +63,11 @@ class _BizNoteAppState extends State<BizNoteApp> {
   /// "Allow all the time", which is what the 15 minute loop needs in order to
   /// run while the app is closed.
   Future<void> _bootstrapPermissions() async {
+    // Location tracking only exists on Android/iOS: elsewhere there is nothing
+    // to grant and no tracker update to trigger, so no dialog is shown either.
+    if (!isBackgroundTrackingSupported) {
+      return;
+    }
     try {
       final bool foregroundGranted =
           await LocationService.ensureForegroundPermission();

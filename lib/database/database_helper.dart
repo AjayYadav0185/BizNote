@@ -126,7 +126,12 @@ class DatabaseHelper {
     return openDatabase(
       await databaseFilePath(),
       version: _databaseVersion,
-      singleInstance: singleInstance,
+      // The web factory rejects `singleInstance: false` with an `ArgumentError`:
+      // all its connections live in one sqlite3 (wasm) instance with a single
+      // virtual file system that has no locking between connections, so two
+      // handles on the same file could corrupt it. There is only one isolate on
+      // the web anyway, which makes the shared instance the correct behaviour.
+      singleInstance: kIsWeb ? true : singleInstance,
       onConfigure: _onConfigure,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
@@ -147,19 +152,30 @@ class DatabaseHelper {
     try {
       return await action(db);
     } finally {
-      await db.close();
+      // On the web a second instance is impossible (the factory hands back the
+      // shared one), so closing here would close the connection the UI isolate
+      // is using.
+      if (!kIsWeb) {
+        await db.close();
+      }
     }
   }
 
   static Future<void> _onConfigure(Database db) async {
     await db.execute('PRAGMA foreign_keys = ON');
+    if (kIsWeb) {
+      // Only one connection exists on the web (see [openIsolatedConnection]),
+      // and the wasm file system manages persistence itself, so the tuning
+      // below is neither needed nor always supported there.
+      return;
+    }
     // The UI isolate and the background service write through two different
     // connections now, so a blocked writer waits for the lock instead of
     // failing the user's save right away.
     await _applyPragma(db, 'PRAGMA busy_timeout = 4000');
     // WAL keeps a background write from blocking the UI (and the other way
-    // around). Best effort: some platforms (the web VFS, hardened Android
-    // builds) cannot switch the journal mode at runtime.
+    // around). Best effort: hardened Android builds cannot always switch the
+    // journal mode at runtime.
     await _applyPragma(db, 'PRAGMA journal_mode = WAL');
   }
 

@@ -72,9 +72,11 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get hasNotes => _allNotes.isNotEmpty;
 
   /// Starts the database <-> service bridge. Called automatically by the
-  /// constructor unless background sync was disabled.
+  /// constructor unless background sync was disabled; a no-op on platforms that
+  /// cannot host the service (web/desktop, see
+  /// [isBackgroundTrackingSupported]).
   Future<void> startBackgroundSync() async {
-    if (_syncStarted) {
+    if (_syncStarted || !isBackgroundTrackingSupported) {
       return;
     }
     _syncStarted = true;
@@ -111,7 +113,12 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Asks the background isolate to run a location cycle right now.
+  ///
+  /// Does nothing where there is no service to talk to (web/desktop).
   void requestImmediateLocationUpdate() {
+    if (!isBackgroundTrackingSupported) {
+      return;
+    }
     try {
       _backgroundService.invoke(BackgroundServiceMethod.refreshLocation);
     } catch (error) {
@@ -120,7 +127,12 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Stops the persistent service (the next app launch starts it again).
+  ///
+  /// Does nothing where there is no service to talk to (web/desktop).
   void pauseLocationTracking() {
+    if (!isBackgroundTrackingSupported) {
+      return;
+    }
     try {
       _backgroundService.invoke(BackgroundServiceMethod.stopService);
     } catch (error) {

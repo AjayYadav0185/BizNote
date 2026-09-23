@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/note.dart';
 import '../providers/note_provider.dart';
+import '../services/background_service.dart';
 import '../utils/date_formatter.dart';
 import 'editor_screen.dart';
 
@@ -145,61 +146,67 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// One row: bold title over a grey "date · preview" line, exactly like the
-  /// iOS Notes list. Long pressing opens the native context menu.
+  /// iOS Notes list. Long pressing opens the native context menu whenever the
+  /// row has an action to offer.
   Widget _buildNoteRow(Note note) {
-    return Column(
-      children: <Widget>[
-        CupertinoContextMenu(
-          actions: _buildContextMenuActions(note),
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => _openEditor(noteId: note.id),
-            child: Container(
-              color: _canvasColor,
-              padding: const EdgeInsets.fromLTRB(20, 11, 20, 11),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    note.displayTitle,
+    Widget content = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _openEditor(noteId: note.id),
+      child: Container(
+        color: _canvasColor,
+        padding: const EdgeInsets.fromLTRB(20, 11, 20, 11),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              note.displayTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                color: CupertinoColors.black,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Row(
+              children: <Widget>[
+                Text(
+                  DateFormatter.formatRelativeFromStorage(note.updatedAt),
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    color: _dateColor,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    note.preview,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
-                      color: CupertinoColors.black,
+                      fontSize: 15,
+                      color: _previewColor,
                     ),
                   ),
-                  const SizedBox(height: 3),
-                  Row(
-                    children: <Widget>[
-                      Text(
-                        DateFormatter.formatRelativeFromStorage(note.updatedAt),
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w500,
-                          color: _dateColor,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          note.preview,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            color: _previewColor,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ),
+          ],
         ),
+      ),
+    );
+
+    final List<CupertinoContextMenuAction> actions =
+        _buildContextMenuActions(note);
+    if (actions.isNotEmpty) {
+      content = CupertinoContextMenu(actions: actions, child: content);
+    }
+
+    return Column(
+      children: <Widget>[
+        content,
         Container(
           height: 0.5,
           margin: const EdgeInsets.only(left: 20),
@@ -212,9 +219,14 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Context menu shown on long press.
   ///
   /// The tracked note offers "Update Now" (asks the background isolate for an
-  /// immediate fix) and "Pause Tracking"; every other note can be deleted.
+  /// immediate fix) and "Pause Tracking"; every other note can be deleted. The
+  /// tracked note keeps its menu hidden on platforms without a background
+  /// service (web/desktop), where those actions do not exist.
   List<CupertinoContextMenuAction> _buildContextMenuActions(Note note) {
     if (note.isFixedNote) {
+      if (!isBackgroundTrackingSupported) {
+        return <CupertinoContextMenuAction>[];
+      }
       return <CupertinoContextMenuAction>[
         CupertinoContextMenuAction(
           trailingIcon: CupertinoIcons.location_fill,
