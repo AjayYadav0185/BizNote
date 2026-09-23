@@ -18,11 +18,23 @@ RUN flutter build web --release --base-href /app/
 # ---- Stage 2: serve with nginx ----
 FROM nginx:1.27-alpine
 
-# Add the MIME types that Flutter's wasm and the APK download need, and drop
-# the stock server block (our template regenerates conf.d/default.conf).
-RUN printf 'application/wasm wasm;\napplication/vnd.android.package-archive apk;\n' \
-      >> /etc/nginx/mime.types \
-    && rm -f /etc/nginx/conf.d/default.conf
+# - Extra MIME types (the APK download; wasm already ships in nginx 1.27's
+#   mime.types). They must be inserted INSIDE the types { ... } block - the
+#   file's last line is "}", so appending after it would put the entries in
+#   http context and nginx would fail with: unknown directive "application/wasm".
+#   Skip any type that is already present to avoid duplicates.
+# - Drop the stock server block (our template regenerates conf.d/default.conf).
+RUN set -eux; \
+    extra=''; \
+    grep -q 'application/wasm' /etc/nginx/mime.types \
+      || extra="$extra    application/wasm wasm;\n"; \
+    grep -q 'application/vnd.android.package-archive' /etc/nginx/mime.types \
+      || extra="$extra    application/vnd.android.package-archive apk;\n"; \
+    tail -1 /etc/nginx/mime.types | grep -qx '}'; \
+    sed -i '$d' /etc/nginx/mime.types; \
+    printf '%b' "$extra" >> /etc/nginx/mime.types; \
+    printf '}\n' >> /etc/nginx/mime.types; \
+    rm -f /etc/nginx/conf.d/default.conf
 
 # Server config. ${PORT} is substituted at container start by the nginx
 # entrypoint's envsubst (Render sets PORT, default 10000).
