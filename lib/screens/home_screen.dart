@@ -117,9 +117,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Scrollable list of notes (with pull to refresh).
+  ///
+  /// While the whole notebook is on screen the rows live in a
+  /// [SliverReorderableList], so any row can be grabbed by its handle and
+  /// dropped somewhere else; the new order is written back through
+  /// [NoteProvider.reorderNotes]. During a search the very same rows are
+  /// rendered by a plain [SliverList] instead: the drag indices address the
+  /// unfiltered list, and "where does this note belong inside a filtered
+  /// subset" has no answer a user could predict.
   Widget _buildNotesList() {
     final NoteProvider provider = context.watch<NoteProvider>();
     final List<Note> notes = provider.notes;
+    final bool isReorderable = provider.searchQuery.isEmpty;
 
     return CustomScrollView(
       physics: const BouncingScrollPhysics(
@@ -134,6 +143,14 @@ class _HomeScreenState extends State<HomeScreen> {
             hasScrollBody: false,
             child: _buildEmptyState(provider),
           )
+        else if (isReorderable)
+          SliverReorderableList(
+            itemCount: notes.length,
+            onReorderItem: provider.reorderNotes,
+            proxyDecorator: _buildDragProxy,
+            itemBuilder: (BuildContext context, int index) =>
+                _buildNoteRow(notes[index], reorderIndex: index),
+          )
         else
           SliverList(
             delegate: SliverChildBuilderDelegate(
@@ -146,73 +163,150 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// One row: bold title over a grey "date · preview" line, exactly like the
-  /// iOS Notes list. Long pressing opens the native context menu whenever the
-  /// row has an action to offer.
-  Widget _buildNoteRow(Note note) {
-    Widget content = GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () => _openEditor(noteId: note.id),
-      child: Container(
-        color: _canvasColor,
-        padding: const EdgeInsets.fromLTRB(20, 11, 20, 11),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Text(
-              note.displayTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.w600,
-                color: CupertinoColors.black,
+  /// iOS Notes list.
+  ///
+  /// Long pressing opens the native context menu; the trailing handle only
+  /// appears when [reorderIndex] is set (the unfiltered, reorderable list) and
+  /// starts a drag. The outer [Column] carries a [ValueKey] on the note id,
+  /// which is what lets [SliverReorderableList] follow a row while it moves.
+  Widget _buildNoteRow(Note note, {int? reorderIndex}) {
+    final bool isReorderable = reorderIndex != null;
+    final String updatedAtLabel =
+        DateFormatter.formatRelativeFromStorage(note.updatedAt);
+
+    Widget row = Container(
+      color: _canvasColor,
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _openEditor(noteId: note.id),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 11, 0, 11),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      note.displayTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                        color: CupertinoColors.black,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      children: <Widget>[
+                        Text(
+                          updatedAtLabel,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                            color: _dateColor,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            note.preview,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              color: _previewColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
-            const SizedBox(height: 3),
-            Row(
-              children: <Widget>[
-                Text(
-                  DateFormatter.formatRelativeFromStorage(note.updatedAt),
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
-                    color: _dateColor,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    note.preview,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      color: _previewColor,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+          ),
+          if (isReorderable)
+            _buildDragHandle(reorderIndex)
+          else
+            const SizedBox(width: 20),
+        ],
       ),
     );
 
     final List<CupertinoContextMenuAction> actions =
         _buildContextMenuActions(note);
     if (actions.isNotEmpty) {
-      content = CupertinoContextMenu(actions: actions, child: content);
+      row = CupertinoContextMenu(actions: actions, child: row);
     }
 
     return Column(
+      key: ValueKey<int?>(note.id),
       children: <Widget>[
-        content,
+        row,
         Container(
           height: 0.5,
           margin: const EdgeInsets.only(left: 20),
           color: _dividerColor,
         ),
       ],
+    );
+  }
+
+  /// The grab affordance that starts a reorder drag.
+  ///
+  /// A dedicated handle instead of the whole row is deliberate: the row's long
+  /// press already belongs to [CupertinoContextMenu], and
+  /// [ReorderableDragStartListener] needs a pointer-down surface of its own
+  /// that a tap can never mistake for "open this note". 44x44 is the minimum
+  /// touch target iOS asks for.
+  Widget _buildDragHandle(int index) {
+    return ReorderableDragStartListener(
+      index: index,
+      child: const SizedBox(
+        width: 44,
+        height: 44,
+        child: Center(
+          child: Icon(
+            CupertinoIcons.line_horizontal_3,
+            size: 18,
+            color: Color(0xFFC7C7CC),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Lifts the dragged row off the page with the soft shadow iOS shows while an
+  /// item is being moved.
+  Widget _buildDragProxy(
+    Widget child,
+    int index,
+    Animation<double> animation,
+  ) {
+    return AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (BuildContext context, Widget? inner) {
+        final double lift = Curves.easeInOut.transform(animation.value);
+        return Transform.scale(
+          scale: 1 + (lift * 0.03),
+          child: Container(
+            decoration: BoxDecoration(
+              color: _canvasColor,
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: const Color(0x33000000),
+                  blurRadius: 12 * lift,
+                  offset: Offset(0, 5 * lift),
+                ),
+              ],
+            ),
+            child: inner,
+          ),
+        );
+      },
     );
   }
 

@@ -19,8 +19,14 @@ import '../utils/date_formatter.dart';
 /// private connection that is opened and closed around a single write.
 class DatabaseHelper {
   static const String _databaseName = 'notepad.db';
-  static const int _databaseVersion = 1;
+
+  /// Schema version. **2** added the `sortOrder` column that backs the manual
+  /// drag-to-reorder list (see [_ensureSchema] for the upgrade path).
+  static const int _databaseVersion = 2;
   static const String _tableName = Note.tableName;
+
+  /// Column that stores the position of a note in the reordered list.
+  static const String _sortOrderColumn = 'sortOrder';
 
   static Database? _database;
   static bool _factoryInitialized = false;
@@ -198,50 +204,115 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY,
         title TEXT NOT NULL,
         content TEXT NOT NULL,
-        updatedAt TEXT NOT NULL
+        updatedAt TEXT NOT NULL,
+        $_sortOrderColumn INTEGER NOT NULL DEFAULT 0
       )
     ''');
     await _seedFixedNote(db);
   }
 
-  /// Migration hook. The fixed note is re-verified in [_onOpen] afterwards.
+  /// Versioned migration hook. [_onOpen] re-runs the very same check on every
+  /// open, so an install whose version number was bumped without the column
+  /// actually being written still heals itself.
   static Future<void> _onUpgrade(
     Database db,
     int oldVersion,
     int newVersion,
   ) async {
-    // No migrations yet: version 1 is the first schema that ships with the
-    // background location tracker.
+    if (oldVersion < 2) {
+      await _ensureSchema(db);
+    }
   }
 
   /// Runs after `onCreate`/`onUpgrade` and on every plain `openDatabase()` call,
-  /// which makes it the safest place to guarantee the fixed note exists.
+  /// which makes it the safest place to guarantee that both the schema and the
+  /// fixed note exist.
   static Future<void> _onOpen(Database db) async {
-    await _migrateLegacyTimestampColumn(db);
+    await _ensureSchema(db);
     await _seedFixedNote(db);
   }
 
-  /// Renames the legacy `date` column (pre-tracker schema) to `updatedAt` so
-  /// existing installs keep their notes instead of crashing on the new column.
-  static Future<void> _migrateLegacyTimestampColumn(Database db) async {
+  /// Brings the table in line with the schema this build expects, whatever the
+  /// version recorded in the file says.
+  ///
+  /// Runs on **every** open instead of only inside [_onUpgrade] because the
+  /// schema drifted between releases faster than the version number did:
+  ///  * very old installs kept the timestamp in a `date` column, and
+  ///  * version 2 added `sortOrder` for the manual drag-to-reorder list.
+  ///
+  /// A single `PRAGMA table_info` is the cheapest way to ask SQLite what is
+  /// really on disk; it reads the schema only and never touches user data.
+  static Future<void> _ensureSchema(Database db) async {
     try {
       final List<Map<String, Object?>> columns =
           await db.rawQuery('PRAGMA table_info($_tableName)');
       if (columns.isEmpty) {
+        // The file exists but the table does not (an interrupted install);
+        // recreate it rather than leaving the app without a notebook.
         await _onCreate(db, _databaseVersion);
         return;
       }
       final Set<Object?> columnNames =
           columns.map((Map<String, Object?> column) => column['name']).toSet();
+
+      // Renames the legacy `date` column (pre-tracker schema) to `updatedAt` so
+      // existing installs keep their notes instead of crashing on the new
+      // column.
       if (columnNames.contains('date') && !columnNames.contains('updatedAt')) {
         await db.execute(
           'ALTER TABLE $_tableName RENAME COLUMN date TO updatedAt',
         );
         debugPrint('[DB] migrated legacy "date" column to "updatedAt"');
       }
+
+      if (!columnNames.contains(_sortOrderColumn)) {
+        await _addSortOrderColumn(db);
+      }
     } catch (error) {
-      debugPrint('[DB] legacy column migration skipped: $error');
+      debugPrint('[DB] schema check skipped: $error');
     }
+  }
+
+  /// Adds the version 2 `sortOrder` column and numbers the existing rows so the
+  /// list looks exactly like it did before the upgrade: newest first.
+  static Future<void> _addSortOrderColumn(Database db) async {
+    await db.execute(
+      'ALTER TABLE $_tableName '
+      'ADD COLUMN $_sortOrderColumn INTEGER NOT NULL DEFAULT 0',
+    );
+
+    final List<Map<String, Object?>> rows = await db.query(
+      _tableName,
+      columns: <String>['id'],
+      orderBy: 'updatedAt DESC',
+    );
+    final Batch batch = db.batch();
+    for (int i = 0; i < rows.length; i++) {
+      batch.update(
+        _tableName,
+        <String, dynamic>{_sortOrderColumn: i},
+        where: 'id = ?',
+        whereArgs: <Object?>[rows[i]['id']],
+      );
+    }
+    await batch.commit(noResult: true);
+    debugPrint(
+      '[DB] added "$_sortOrderColumn" to $_tableName (${rows.length} rows)',
+    );
+  }
+
+  /// The `sortOrder` value that puts a note on top of the list: one below the
+  /// current minimum, or `0` while the table is still empty.
+  ///
+  /// Counting downwards (instead of renumbering every row on each insert) keeps
+  /// the write of a new note a single statement, and negative values survive
+  /// the `NOT NULL`/`DEFAULT 0` column just fine.
+  static Future<int> _nextTopSortOrder(Database db) async {
+    final List<Map<String, Object?>> result = await db.rawQuery(
+      'SELECT MIN($_sortOrderColumn) AS minOrder FROM $_tableName',
+    );
+    final int? minOrder = result.first['minOrder'] as int?;
+    return (minOrder ?? 1) - 1;
   }
 
   /// Seeds the fixed note (`id = 1`) exactly once: the insert is skipped when a
@@ -265,6 +336,8 @@ class DatabaseHelper {
         'title': Note.fixedNoteTitle,
         'content': Note.fixedNotePlaceholder,
         'updatedAt': DateFormatter.formatForStorage(DateTime.now()),
+        // Seeded like any other new note: on top of whatever is already there.
+        _sortOrderColumn: await _nextTopSortOrder(db),
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
@@ -281,11 +354,19 @@ class DatabaseHelper {
   // Reads
   // ---------------------------------------------------------------------------
 
-  /// All notes, most recently edited first. The tracker note therefore floats to
-  /// the top of the list right after every background update.
+  /// All notes in the order the user arranged them by hand.
+  ///
+  /// `sortOrder` leads, so a drag sticks across restarts and a background write
+  /// to the tracker note no longer floats that row to the top; `updatedAt DESC`
+  /// is the tie breaker, which also reproduces the old "newest first" list for
+  /// any rows that still share an order (a fresh, never reordered install, or a
+  /// row that was inserted while an older build was running).
   Future<List<Note>> getNotes() async {
     final List<Map<String, Object?>> rows = await _withDatabase(
-      (Database db) => db.query(_tableName, orderBy: 'updatedAt DESC'),
+      (Database db) => db.query(
+        _tableName,
+        orderBy: '$_sortOrderColumn ASC, updatedAt DESC',
+      ),
     );
     return rows.map((Map<String, Object?> row) => Note.fromMap(row)).toList();
   }
@@ -321,7 +402,7 @@ class DatabaseHelper {
         _tableName,
         where: 'title LIKE ? OR content LIKE ?',
         whereArgs: <Object?>['%$query%', '%$query%'],
-        orderBy: 'updatedAt DESC',
+        orderBy: '$_sortOrderColumn ASC, updatedAt DESC',
       ),
     );
     return rows.map((Map<String, Object?> row) => Note.fromMap(row)).toList();
@@ -332,18 +413,29 @@ class DatabaseHelper {
   // ---------------------------------------------------------------------------
 
   /// Inserts [note] and returns the new primary key.
+  ///
+  /// A brand new note always lands **on top** of the list, like the iPhone
+  /// Notes app: its order is computed as one below the smallest value currently
+  /// in the table, instead of the `0` default of [Note] (which would otherwise
+  /// drop the note into the middle of a hand ordered list).
   Future<int> insertNote(Note note) {
-    return _withDatabase(
-      (Database db) => db.insert(
+    return _withDatabase((Database db) async {
+      final Map<String, dynamic> row = note.toMap();
+      row[_sortOrderColumn] = await _nextTopSortOrder(db);
+      return db.insert(
         _tableName,
-        note.toMap(),
+        row,
         conflictAlgorithm: ConflictAlgorithm.replace,
-      ),
-    );
+      );
+    });
   }
 
   /// Writes every user editable field of [note]. Returns the number of affected
   /// rows (`1` on success, `0` when the row no longer exists).
+  ///
+  /// The manual order is deliberately left alone here: `toMap` does not carry
+  /// [Note.sortOrder], so editing a note never moves it in the list. Dragging a
+  /// row is the only thing that renumbers it, through [updateNoteOrder].
   Future<int> updateNote(Note note) {
     final int? id = note.id;
     if (id == null) {
@@ -357,6 +449,32 @@ class DatabaseHelper {
         whereArgs: <Object?>[id],
       ),
     );
+  }
+
+  /// Persists [orderedIds] as the manual list order: the first id becomes
+  /// `sortOrder` 0, the second 1, and so on.
+  ///
+  /// The renumbering runs as one batch so a drop either writes the complete new
+  /// order or nothing at all - a half applied order would make the list jump
+  /// around on the next read. Ids that are not in [orderedIds] keep their
+  /// previous value, which makes a partial list harmless rather than corrupting
+  /// the numbering with gaps.
+  Future<void> updateNoteOrder(List<int> orderedIds) {
+    if (orderedIds.isEmpty) {
+      return Future<void>.value();
+    }
+    return _withDatabase((Database db) async {
+      final Batch batch = db.batch();
+      for (int i = 0; i < orderedIds.length; i++) {
+        batch.update(
+          _tableName,
+          <String, dynamic>{_sortOrderColumn: i},
+          where: 'id = ?',
+          whereArgs: <Object?>[orderedIds[i]],
+        );
+      }
+      await batch.commit(noResult: true);
+    });
   }
 
   /// Deletes [id]. Returns the number of affected rows.

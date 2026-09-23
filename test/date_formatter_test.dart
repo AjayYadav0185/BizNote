@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:notepad_app/utils/date_formatter.dart';
+import 'package:BizNote/utils/date_formatter.dart';
 
 void main() {
   group('DateFormatter', () {

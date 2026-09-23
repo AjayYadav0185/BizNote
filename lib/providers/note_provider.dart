@@ -194,7 +194,10 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (id <= 0) {
           return null;
         }
-        return stamped.copyWith(id: id);
+        // Hand back the row as it was actually stored: it carries the id SQLite
+        // assigned *and* the `sortOrder` the list put it at, so a later save in
+        // the same session keeps the note exactly where the user sees it.
+        return _noteInMemory(id) ?? stamped.copyWith(id: id);
       }
 
       final int rows = await _databaseHelper.updateNote(stamped);
@@ -259,8 +262,69 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   // ---------------------------------------------------------------------------
+  // Ordering
+  // ---------------------------------------------------------------------------
+
+  /// Moves the note at [oldIndex] to [newIndex] in the manually ordered list.
+  ///
+  /// The indices are the ones `SliverReorderableList` reports through
+  /// `onReorderItem`, i.e. [newIndex] is already the final slot of the note
+  /// *after* it has been lifted out of the list, so no `- 1` correction is
+  /// needed here.
+  ///
+  /// The visible list is updated first, so the row lands where the finger let
+  /// go without waiting for a disk write, and the new numbering is persisted
+  /// right after. A failed write is only logged: the optimistic order stays on
+  /// screen until the next read pulls the stored one back in.
+  Future<void> reorderNotes(int oldIndex, int newIndex) async {
+    if (oldIndex < 0 || oldIndex >= _allNotes.length) {
+      return;
+    }
+    if (newIndex < 0 || newIndex >= _allNotes.length) {
+      return;
+    }
+    if (oldIndex == newIndex) {
+      return;
+    }
+
+    final List<Note> reordered = List<Note>.of(_allNotes);
+    final Note moved = reordered.removeAt(oldIndex);
+    reordered.insert(newIndex, moved);
+
+    // Renumber locally as well: the next `refreshFromDatabase` compares the rows
+    // field by field, so the list would otherwise "change back" for one frame
+    // once the same values come in from SQLite.
+    _allNotes = <Note>[
+      for (int i = 0; i < reordered.length; i++)
+        reordered[i].copyWith(sortOrder: i),
+    ];
+    notifyListeners();
+
+    try {
+      await _databaseHelper.updateNoteOrder(
+        <int>[
+          for (final Note note in _allNotes)
+            if (note.id != null) note.id!,
+        ],
+      );
+    } catch (error) {
+      debugPrint('[UI] persisting the new note order failed: $error');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
+
+  /// The cached row with [id], as it was last read from the database.
+  Note? _noteInMemory(int id) {
+    for (final Note note in _allNotes) {
+      if (note.id == id) {
+        return note;
+      }
+    }
+    return null;
+  }
 
   /// Swaps in [notes] and notifies listeners only when the list really changed,
   /// which keeps the 30 second safety-net poll from rebuilding for nothing.

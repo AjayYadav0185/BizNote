@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:notepad_app/services/location_service.dart';
+import 'package:BizNote/services/location_service.dart';
 
 void main() {
   group('LocationService.buildTrackerContent', () {

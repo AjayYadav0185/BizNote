@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:notepad_app/models/note.dart';
+import 'package:BizNote/models/note.dart';
 
 void main() {
   group('Note', () {
@@ -100,6 +100,69 @@ void main() {
       expect(lines[1], startsWith('Timestamp:'));
       expect(lines[2], startsWith('Latitude:'));
       expect(lines[3], startsWith('Longitude:'));
+    });
+
+    test('sortOrder is read from the row and defaults to 0', () {
+      expect(Note.fromMap(<String, dynamic>{'id': 1}).sortOrder, 0);
+      expect(
+        Note.fromMap(<String, dynamic>{'id': 1, 'sortOrder': -3}).sortOrder,
+        -3,
+      );
+    });
+
+    test('sortOrder stays out of toMap so an edit cannot reorder a note', () {
+      const Note note = Note(
+        id: 1,
+        title: 'a',
+        content: 'b',
+        updatedAt: 'c',
+        sortOrder: 5,
+      );
+
+      // The order is list metadata that only insert/reorder write, so the plain
+      // "save the text" UPDATE can never shuffle a row the user just dropped.
+      expect(note.toMap().containsKey('sortOrder'), isFalse);
+    });
+
+    test('copyWith carries the sort order over unless it is replaced', () {
+      const Note note = Note(
+        id: 1,
+        title: 'a',
+        content: 'b',
+        updatedAt: 'c',
+        sortOrder: 4,
+      );
+
+      expect(note.copyWith(title: 'z').sortOrder, 4);
+      expect(note.copyWith(sortOrder: 9).sortOrder, 9);
+    });
+
+    test('equality takes the sort order into account', () {
+      const Note a = Note(
+        id: 1,
+        title: 't',
+        content: 'c',
+        updatedAt: 'u',
+        sortOrder: 0,
+      );
+      const Note b = Note(
+        id: 1,
+        title: 't',
+        content: 'c',
+        updatedAt: 'u',
+        sortOrder: 0,
+      );
+      const Note c = Note(
+        id: 1,
+        title: 't',
+        content: 'c',
+        updatedAt: 'u',
+        sortOrder: 1,
+      );
+
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(c));
     });
   });
 }

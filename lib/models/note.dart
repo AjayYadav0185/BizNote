@@ -1,7 +1,8 @@
 /// Immutable domain model for one row of the local `notes` table.
 ///
 /// The SQLite schema is:
-/// `id INTEGER PRIMARY KEY, title TEXT, content TEXT, updatedAt TEXT`
+/// `id INTEGER PRIMARY KEY, title TEXT, content TEXT, updatedAt TEXT,
+///  sortOrder INTEGER NOT NULL DEFAULT 0`
 class Note {
   /// Physical SQLite table name.
   static const String tableName = 'notes';
@@ -37,11 +38,25 @@ class Note {
   /// (`yyyy-MM-dd HH:mm:ss`) so that `ORDER BY updatedAt` stays chronological.
   final String updatedAt;
 
+  /// Position of the note in the manually ordered list.
+  ///
+  /// The list is read with `ORDER BY sortOrder, updatedAt DESC`, so a smaller
+  /// value means "higher up". Dragging a row rewrites the whole numbering
+  /// through `DatabaseHelper.updateNoteOrder`, and a brand new note is placed
+  /// at the very top by `DatabaseHelper.insertNote`.
+  ///
+  /// The field is intentionally **not** part of [toMap]: the order is list
+  /// metadata that only the reorder/insert queries own, and leaving it out
+  /// keeps the "save the edited text" UPDATE from shuffling the row the user
+  /// just dropped somewhere.
+  final int sortOrder;
+
   const Note({
     this.id,
     required this.title,
     required this.content,
     required this.updatedAt,
+    this.sortOrder = 0,
   });
 
   /// True when this note is the background location tracker note.
@@ -67,6 +82,7 @@ class Note {
       title: (map['title'] as String?) ?? '',
       content: (map['content'] as String?) ?? '',
       updatedAt: (map['updatedAt'] as String?) ?? '',
+      sortOrder: (map['sortOrder'] as int?) ?? 0,
     );
   }
 
@@ -87,12 +103,14 @@ class Note {
     String? title,
     String? content,
     String? updatedAt,
+    int? sortOrder,
   }) {
     return Note(
       id: id ?? this.id,
       title: title ?? this.title,
       content: content ?? this.content,
       updatedAt: updatedAt ?? this.updatedAt,
+      sortOrder: sortOrder ?? this.sortOrder,
     );
   }
 
@@ -103,11 +121,12 @@ class Note {
         other.id == id &&
         other.title == title &&
         other.content == content &&
-        other.updatedAt == updatedAt;
+        other.updatedAt == updatedAt &&
+        other.sortOrder == sortOrder;
   }
 
   @override
-  int get hashCode => Object.hash(id, title, content, updatedAt);
+  int get hashCode => Object.hash(id, title, content, updatedAt, sortOrder);
 
   @override
   String toString() => 'Note(id: $id, title: $title, updatedAt: $updatedAt)';

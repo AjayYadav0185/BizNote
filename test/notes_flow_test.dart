@@ -1,10 +1,10 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:notepad_app/database/database_helper.dart';
-import 'package:notepad_app/models/note.dart';
-import 'package:notepad_app/providers/note_provider.dart';
-import 'package:notepad_app/screens/home_screen.dart';
-import 'package:notepad_app/utils/date_formatter.dart';
+import 'package:BizNote/database/database_helper.dart';
+import 'package:BizNote/models/note.dart';
+import 'package:BizNote/providers/note_provider.dart';
+import 'package:BizNote/screens/home_screen.dart';
+import 'package:BizNote/utils/date_formatter.dart';
 import 'package:provider/provider.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -23,8 +23,12 @@ class _InMemoryDatabaseHelper implements DatabaseHelper {
 
   @override
   Future<List<Note>> getNotes() async {
+    // Mirrors `DatabaseHelper.getNotes`: manual order first, newest second.
     final List<Note> sorted = List<Note>.of(_notes)
-      ..sort((Note a, Note b) => b.updatedAt.compareTo(a.updatedAt));
+      ..sort((Note a, Note b) {
+        final int byOrder = a.sortOrder.compareTo(b.sortOrder);
+        return byOrder != 0 ? byOrder : b.updatedAt.compareTo(a.updatedAt);
+      });
     return sorted;
   }
 
@@ -53,10 +57,28 @@ class _InMemoryDatabaseHelper implements DatabaseHelper {
   @override
   Future<int> insertNote(Note note) async {
     final int id = note.id ?? _nextId++;
+    // Mirrors `DatabaseHelper.insertNote`: a new note goes on top.
+    final int top = _notes.isEmpty
+        ? 0
+        : _notes
+                .map((Note existing) => existing.sortOrder)
+                .reduce((int a, int b) => a < b ? a : b) -
+            1;
     _notes
       ..removeWhere((Note existing) => existing.id == id)
-      ..add(note.copyWith(id: id));
+      ..add(note.copyWith(id: id, sortOrder: top));
     return id;
+  }
+
+  @override
+  Future<void> updateNoteOrder(List<int> orderedIds) async {
+    for (int i = 0; i < orderedIds.length; i++) {
+      final int index =
+          _notes.indexWhere((Note note) => note.id == orderedIds[i]);
+      if (index != -1) {
+        _notes[index] = _notes[index].copyWith(sortOrder: i);
+      }
+    }
   }
 
   @override
@@ -311,5 +333,123 @@ void main() {
     expect(find.byType(CupertinoActivityIndicator), findsNothing);
     expect(find.text('This note could not be opened.'), findsOneWidget);
     expect(find.text('Try Again'), findsOneWidget);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Drag to reorder
+  // ---------------------------------------------------------------------------
+
+  List<Note> orderedNotes() => <Note>[
+        const Note(
+          id: 5,
+          title: 'First',
+          content: 'first body',
+          updatedAt: '2026-09-23 10:00:00',
+          sortOrder: 0,
+        ),
+        const Note(
+          id: 6,
+          title: 'Second',
+          content: 'second body',
+          updatedAt: '2026-09-23 09:00:00',
+          sortOrder: 1,
+        ),
+      ];
+
+  test('reorderNotes moves the row and persists the new order', () async {
+    final _InMemoryDatabaseHelper database =
+        _InMemoryDatabaseHelper(seeded: orderedNotes());
+    final NoteProvider provider = NoteProvider(
+      databaseHelper: database,
+      enableBackgroundSync: false,
+    );
+    addTearDown(provider.dispose);
+
+    await provider.loadNotes();
+    expect(
+      provider.notes.map((Note note) => note.title).toList(),
+      <String>['First', 'Second'],
+    );
+
+    // Drag the last row to the top, which is what `onReorderItem` reports.
+    await provider.reorderNotes(1, 0);
+
+    expect(
+      provider.notes.map((Note note) => note.title).toList(),
+      <String>['Second', 'First'],
+    );
+    // The renumbering also kept the in-memory copy in step with the database,
+    // so the next refresh does not flip the list back.
+    expect(
+      provider.notes.map((Note note) => note.sortOrder).toList(),
+      <int>[0, 1],
+    );
+    expect(
+      (await database.getNotes()).map((Note note) => note.title).toList(),
+      <String>['Second', 'First'],
+    );
+  });
+
+  testWidgets('the drag handle reorders the list', (WidgetTester tester) async {
+    final _InMemoryDatabaseHelper database =
+        _InMemoryDatabaseHelper(seeded: orderedNotes());
+    final NoteProvider provider = NoteProvider(
+      databaseHelper: database,
+      enableBackgroundSync: false,
+    );
+    addTearDown(provider.dispose);
+
+    await tester.pumpWidget(_app(provider));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getCenter(find.text('First')).dy,
+      lessThan(tester.getCenter(find.text('Second')).dy),
+    );
+
+    // Grab the handle of the first row and drop it below the second one. The
+    // handle is the only part of a row that starts a drag, so the long press
+    // context menu keeps working.
+    final Finder handle = find.byIcon(CupertinoIcons.line_horizontal_3).first;
+    expect(handle, findsOneWidget);
+
+    final TestGesture drag = await tester.startGesture(tester.getCenter(handle));
+    await tester.pump(const Duration(milliseconds: 100));
+    await drag.moveBy(const Offset(0, 40));
+    await tester.pump(const Duration(milliseconds: 100));
+    await drag.moveBy(const Offset(0, 40));
+    await tester.pump(const Duration(milliseconds: 100));
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getCenter(find.text('Second')).dy,
+      lessThan(tester.getCenter(find.text('First')).dy),
+    );
+    expect(
+      (await database.getNotes()).map((Note note) => note.title).toList(),
+      <String>['Second', 'First'],
+    );
+  });
+
+  testWidgets('searching hides the drag handles', (WidgetTester tester) async {
+    final NoteProvider provider = NoteProvider(
+      databaseHelper: _InMemoryDatabaseHelper(seeded: orderedNotes()),
+      enableBackgroundSync: false,
+    );
+    addTearDown(provider.dispose);
+
+    await tester.pumpWidget(_app(provider));
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(CupertinoIcons.line_horizontal_3), findsNWidgets(2));
+
+    await tester.enterText(find.byType(CupertinoSearchTextField), 'first');
+    await tester.pumpAndSettle();
+
+    // Reordering a filtered subset has no meaningful result, so the rows fall
+    // back to the plain, non-draggable list.
+    expect(find.text('First'), findsOneWidget);
+    expect(find.byIcon(CupertinoIcons.line_horizontal_3), findsNothing);
   });
 }
