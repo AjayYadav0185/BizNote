@@ -1,4 +1,4 @@
-name: notepad_app
+name: BizNote
 description: A production-ready iOS-style offline Notepad app built with Flutter.
 publish_to: 'none'
 version: 1.0.0+1
