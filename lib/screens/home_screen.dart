@@ -23,6 +23,9 @@ class _HomeScreenState extends State<HomeScreen> {
   static const Color _dateColor = Color(0xFF8E8E93);
   static const Color _previewColor = Color(0xFF8E8E93);
 
+  /// Notepad illustration bundled through the `lib/assets/` pubspec entry.
+  static const String _emptyStateAsset = 'lib/assets/note.webp';
+
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
@@ -298,6 +301,12 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
+            Image.asset(
+              _emptyStateAsset,
+              width: 72,
+              height: 72,
+            ),
+            const SizedBox(height: 14),
             Text(
               query.isEmpty ? 'No Notes' : 'No Results',
               style: const TextStyle(

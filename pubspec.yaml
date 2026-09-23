@@ -29,3 +29,7 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    # Source artwork used by the empty-state illustration and as the reference
+    # for the generated Android/iOS launcher icons.
+    - lib/assets/
