@@ -165,23 +165,32 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ---------------------------------------------------------------------------
 
   /// Inserts or updates [note] depending on whether it already has an id.
-  /// Returns `true` when the write reached the database.
-  Future<bool> saveNote(Note note) async {
+  ///
+  /// Returns the note exactly as it was persisted - including the id SQLite
+  /// assigned and the fresh `updatedAt` - or `null` when the write failed.
+  /// Callers (the editor) use the returned instance to stay in sync, so a later
+  /// save in the same session updates that row instead of inserting a second
+  /// copy of it.
+  Future<Note?> saveNote(Note note) async {
     final String updatedAt = DateFormatter.formatForStorage(DateTime.now());
     final Note stamped = note.copyWith(updatedAt: updatedAt);
 
     try {
-      final int rows;
       if (stamped.id == null) {
-        rows = await _databaseHelper.insertNote(stamped);
-      } else {
-        rows = await _databaseHelper.updateNote(stamped);
+        final int id = await _databaseHelper.insertNote(stamped);
+        await refreshFromDatabase();
+        if (id <= 0) {
+          return null;
+        }
+        return stamped.copyWith(id: id);
       }
+
+      final int rows = await _databaseHelper.updateNote(stamped);
       await refreshFromDatabase();
-      return rows > 0;
+      return rows > 0 ? stamped : null;
     } catch (error) {
       debugPrint('[UI] saving note failed: $error');
-      return false;
+      return null;
     }
   }
 

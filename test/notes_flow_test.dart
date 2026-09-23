@@ -109,6 +109,17 @@ class _InMemoryDatabaseHelper implements DatabaseHelper {
   Future<void> close() async {}
 }
 
+/// Fails every single note read, like the dead database connection that used to
+/// leave the editor stuck on its spinner (`database_closed`).
+class _FailingReadDatabaseHelper extends _InMemoryDatabaseHelper {
+  _FailingReadDatabaseHelper({super.seeded});
+
+  @override
+  Future<Note?> getNoteById(int id) async {
+    throw Exception('database_closed 1');
+  }
+}
+
 /// The row the real app seeds through `DatabaseHelper._seedFixedNote`.
 Note _trackedNote({String status = 'Active'}) => Note(
       id: Note.fixedNoteId,
@@ -278,5 +289,27 @@ void main() {
 
     expect(find.text('Groceries'), findsOneWidget);
     expect(find.text(Note.fixedNoteTitle), findsNothing);
+  });
+
+  testWidgets('a failing note read shows a retry instead of an endless spinner',
+      (WidgetTester tester) async {
+    final NoteProvider provider = NoteProvider(
+      databaseHelper:
+          _FailingReadDatabaseHelper(seeded: <Note>[_trackedNote()]),
+      enableBackgroundSync: false,
+    );
+    addTearDown(provider.dispose);
+
+    await tester.pumpWidget(_app(provider));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text(Note.fixedNoteTitle));
+    await tester.pumpAndSettle();
+
+    // A dead connection must never leave the editor on its loading indicator:
+    // that is exactly what made editing a note impossible.
+    expect(find.byType(CupertinoActivityIndicator), findsNothing);
+    expect(find.text('This note could not be opened.'), findsOneWidget);
+    expect(find.text('Try Again'), findsOneWidget);
   });
 }

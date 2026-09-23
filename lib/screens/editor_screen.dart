@@ -36,7 +36,11 @@ class _EditorScreenState extends State<EditorScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
   bool _isDirty = false;
-  bool _hasSaved = false;
+
+  /// Set when the note could not be read. Rendered as an inline error with a
+  /// retry action so the screen never stays on the spinner (and never turns
+  /// into a silent, empty "new note") after a database hiccup.
+  String? _loadError;
   String _updatedAtLabel = '';
 
   @override
@@ -69,6 +73,9 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   /// Loads the note that is being edited (new notes start empty).
+  ///
+  /// A failing read must never leave the screen spinning forever, so the error
+  /// is captured in [_loadError] where [_retryLoad] can pick it up again.
   Future<void> _load() async {
     final int? noteId = widget.noteId;
     if (noteId == null) {
@@ -78,7 +85,21 @@ class _EditorScreenState extends State<EditorScreen> {
       return;
     }
 
-    final Note? note = await _provider.getNoteById(noteId);
+    Note? note;
+    try {
+      note = await _provider.getNoteById(noteId);
+    } catch (error) {
+      debugPrint('[Editor] loading note $noteId failed: $error');
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isLoading = false;
+        _loadError = 'This note could not be opened.';
+      });
+      return;
+    }
+
     if (!mounted) {
       return;
     }
@@ -95,57 +116,67 @@ class _EditorScreenState extends State<EditorScreen> {
     // database again, so the note is not dirty any more.
     _isDirty = false;
 
-    setState(() => _isLoading = false);
+    setState(() {
+      _isLoading = false;
+      _loadError = null;
+    });
 
     // iOS puts the cursor into the body for an existing note; a brand new note
     // starts with the title (see the `autofocus` below).
     _bodyFocusNode.requestFocus();
   }
 
+  /// Clears [_loadError] and reads the note again.
+  void _retryLoad() {
+    setState(() {
+      _loadError = null;
+      _isLoading = true;
+    });
+    unawaited(_load());
+  }
+
   /// Commits title + body to the database.
   ///
-  /// The commit is idempotent for the lifetime of this screen ([_hasSaved]): a
-  /// new note must never be inserted twice. The text is snapshot into local
-  /// variables *before* the first `await` so the save never touches the
-  /// (possibly disposed) controllers after the database write completes.
+  /// Saving is idempotent for the lifetime of this screen: the row returned by
+  /// the first successful write is kept in [_note], so a later save updates that
+  /// row instead of inserting a second copy of it. The text is snapshotted into
+  /// local variables *before* the first `await`, so the write never touches the
+  /// (possibly disposed) controllers afterwards.
+  ///
   /// When [popAfterSave] is true (the "Done" button) the route is popped only
-  /// after the write has finished; if the write fails the editor stays open
-  /// and shows the error instead of silently dropping the note.
+  /// after the write has finished; a failed write keeps the editor open and
+  /// shows the error instead of dropping the note silently.
   Future<void> _save({bool popAfterSave = false}) async {
     if (_isSaving) {
-      return;
-    }
-    if (_hasSaved) {
-      if (popAfterSave && mounted) {
-        Navigator.of(context).pop();
-      }
       return;
     }
 
     final String title = _titleController.text.trim();
     final String body = _bodyController.text;
-    final bool isNewNote = widget.noteId == null;
+    final bool isNewNote = _note == null;
     final bool isEmpty = title.isEmpty && body.trim().isEmpty;
 
-    // Never create empty notes, and never issue a pointless UPDATE.
+    // Never create empty notes, and never issue a pointless UPDATE. Nothing has
+    // to be written in either case, so the route may leave right away.
     if ((isNewNote && isEmpty) || (!isNewNote && !_isDirty)) {
-      _hasSaved = true;
       if (popAfterSave && mounted) {
         Navigator.of(context).pop();
       }
       return;
     }
 
+    final Note draft = (_note ??
+            Note(title: title, content: body, updatedAt: ''))
+        .copyWith(title: title, content: body);
+
     _isSaving = true;
     if (mounted) {
       setState(() {});
     }
-    bool saved = false;
+
+    Note? persisted;
     try {
-      final Note draft = (_note ??
-              Note(title: title, content: body, updatedAt: ''))
-          .copyWith(title: title, content: body);
-      saved = await _provider.saveNote(draft);
+      persisted = await _provider.saveNote(draft);
     } finally {
       _isSaving = false;
     }
@@ -154,12 +185,14 @@ class _EditorScreenState extends State<EditorScreen> {
       return;
     }
 
-    if (saved) {
-      _hasSaved = true;
+    if (persisted != null) {
+      // Keep the persisted row: it carries the id SQLite assigned, which makes
+      // the next save an UPDATE, and the timestamp that really reached the
+      // database, which is what the footer should show.
+      _note = persisted;
       _isDirty = false;
-      _updatedAtLabel = DateFormatter.formatFullFromStorage(
-        DateFormatter.formatForStorage(DateTime.now()),
-      );
+      _updatedAtLabel =
+          DateFormatter.formatFullFromStorage(persisted.updatedAt);
       setState(() {});
       if (popAfterSave) {
         Navigator.of(context).pop();
@@ -215,7 +248,9 @@ class _EditorScreenState extends State<EditorScreen> {
         if (!didPop) {
           return;
         }
-        if (_hasSaved || _isSaving) {
+        // Nothing to persist: an already saved note whose buffers still match
+        // the database, or a save that is already in flight.
+        if (_isSaving || (_note != null && !_isDirty)) {
           return;
         }
         await _save();
@@ -246,10 +281,45 @@ class _EditorScreenState extends State<EditorScreen> {
           ),
         ),
       ),
-      child: SafeArea(
-        child: _isLoading
-            ? const Center(child: CupertinoActivityIndicator())
-            : _buildCanvas(),
+      child: SafeArea(child: _buildBody()),
+    );
+  }
+
+  /// Spinner, load error or the editable canvas.
+  Widget _buildBody() {
+    if (_isLoading) {
+      return const Center(child: CupertinoActivityIndicator());
+    }
+    if (_loadError != null) {
+      return _buildLoadError();
+    }
+    return _buildCanvas();
+  }
+
+  /// Inline error for a note that could not be read, with a retry action.
+  Widget _buildLoadError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Text(
+              _loadError!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 15,
+                color: CupertinoColors.systemGrey,
+              ),
+            ),
+            const SizedBox(height: 14),
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              onPressed: _retryLoad,
+              child: const Text('Try Again'),
+            ),
+          ],
+        ),
       ),
     );
   }

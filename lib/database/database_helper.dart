@@ -65,8 +65,42 @@ class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._();
 
   /// Cached connection of the current isolate.
-  Future<Database> get database async =>
-      _database ??= await openIsolatedConnection();
+  ///
+  /// A handle that is not open any more is dropped and reopened instead of
+  /// being handed out again: a stale handle makes every later query fail with
+  /// `database_closed`. Use [_withDatabase] for the actual queries, because a
+  /// close that happened on the **native** side is invisible to [Database.isOpen]
+  /// and only shows up as an error.
+  Future<Database> get database async {
+    final Database? cached = _database;
+    if (cached != null && cached.isOpen) {
+      return cached;
+    }
+    return _database = await openIsolatedConnection();
+  }
+
+  /// Runs [action] on the cached connection and heals that connection once when
+  /// it turns out to be closed.
+  ///
+  /// Two isolates inside the same process can end up with one native database
+  /// handle (`sqflite`'s "single instance" registry is process wide), so a close
+  /// that happened "somewhere else" surfaces as a `database_closed` error
+  /// rather than as a Dart side closed flag. Dropping the cached handle and
+  /// reopening it is what keeps saving notes working after such an event.
+  Future<T> _withDatabase<T>(Future<T> Function(Database db) action) async {
+    Database db = await database;
+    try {
+      return await action(db);
+    } catch (error) {
+      if (error is! DatabaseException || !error.isDatabaseClosedError()) {
+        rethrow;
+      }
+      debugPrint('[DB] cached connection was closed; reopening it');
+      _database = null;
+      db = await database;
+      return await action(db);
+    }
+  }
 
   /// Absolute path of the database file, e.g.
   /// `/data/data/com.biznote.notepad_app/databases/notepad.db`.
@@ -76,10 +110,23 @@ class DatabaseHelper {
   /// Opens a brand new, **uncached** connection with the full schema hooks
   /// attached, so even the very first background write creates the table and
   /// seeds the fixed note when the UI never ran before.
-  static Future<Database> openIsolatedConnection() async {
+  ///
+  /// [singleInstance] maps straight onto sqflite's `singleInstance` flag.
+  /// The UI isolate uses the default (`true`: one handle shared by every call
+  /// of this isolate); **every other isolate must pass `false`**, because
+  /// sqflite's "single instance" registry lives in the native plugin and is
+  /// therefore shared by all Flutter engines in the same process. A background
+  /// connection opened with the default receives the very same handle as the UI
+  /// isolate, and closing it at the end of a background cycle tears the UI
+  /// connection down as well: every later save then fails with
+  /// `database_closed <id>`.
+  static Future<Database> openIsolatedConnection({
+    bool singleInstance = true,
+  }) async {
     return openDatabase(
       await databaseFilePath(),
       version: _databaseVersion,
+      singleInstance: singleInstance,
       onConfigure: _onConfigure,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
@@ -89,10 +136,14 @@ class DatabaseHelper {
 
   /// Runs [action] on a dedicated connection and always closes it, even when
   /// [action] throws.
+  ///
+  /// The connection is opened with `singleInstance: false` on purpose: closing
+  /// it must never close the handle the UI isolate caches (see
+  /// [openIsolatedConnection]).
   static Future<T> withIsolatedConnection<T>(
     Future<T> Function(Database db) action,
   ) async {
-    final Database db = await openIsolatedConnection();
+    final Database db = await openIsolatedConnection(singleInstance: false);
     try {
       return await action(db);
     } finally {
@@ -102,6 +153,26 @@ class DatabaseHelper {
 
   static Future<void> _onConfigure(Database db) async {
     await db.execute('PRAGMA foreign_keys = ON');
+    // The UI isolate and the background service write through two different
+    // connections now, so a blocked writer waits for the lock instead of
+    // failing the user's save right away.
+    await _applyPragma(db, 'PRAGMA busy_timeout = 4000');
+    // WAL keeps a background write from blocking the UI (and the other way
+    // around). Best effort: some platforms (the web VFS, hardened Android
+    // builds) cannot switch the journal mode at runtime.
+    await _applyPragma(db, 'PRAGMA journal_mode = WAL');
+  }
+
+  /// Runs one `PRAGMA` through [Database.rawQuery], which - unlike `execute` -
+  /// works on Android for statements that return a row (like `journal_mode`).
+  /// Failures are logged only: a pragma is a tuning knob, never a reason to
+  /// leave the app without a database.
+  static Future<void> _applyPragma(Database db, String pragma) async {
+    try {
+      await db.rawQuery(pragma);
+    } catch (error) {
+      debugPrint('[DB] "$pragma" skipped: $error');
+    }
   }
 
   /// Creates the `notes` table and seeds the fixed tracker note.
@@ -197,22 +268,21 @@ class DatabaseHelper {
   /// All notes, most recently edited first. The tracker note therefore floats to
   /// the top of the list right after every background update.
   Future<List<Note>> getNotes() async {
-    final Database db = await database;
-    final List<Map<String, Object?>> rows = await db.query(
-      _tableName,
-      orderBy: 'updatedAt DESC',
+    final List<Map<String, Object?>> rows = await _withDatabase(
+      (Database db) => db.query(_tableName, orderBy: 'updatedAt DESC'),
     );
     return rows.map((Map<String, Object?> row) => Note.fromMap(row)).toList();
   }
 
   /// A single note, or `null` when it does not exist anymore.
   Future<Note?> getNoteById(int id) async {
-    final Database db = await database;
-    final List<Map<String, Object?>> rows = await db.query(
-      _tableName,
-      where: 'id = ?',
-      whereArgs: <Object?>[id],
-      limit: 1,
+    final List<Map<String, Object?>> rows = await _withDatabase(
+      (Database db) => db.query(
+        _tableName,
+        where: 'id = ?',
+        whereArgs: <Object?>[id],
+        limit: 1,
+      ),
     );
     if (rows.isEmpty) {
       return null;
@@ -222,20 +292,21 @@ class DatabaseHelper {
 
   /// Number of rows in the `notes` table.
   Future<int> getNoteCount() async {
-    final Database db = await database;
-    final List<Map<String, Object?>> result =
-        await db.rawQuery('SELECT COUNT(*) AS count FROM $_tableName');
+    final List<Map<String, Object?>> result = await _withDatabase(
+      (Database db) => db.rawQuery('SELECT COUNT(*) AS count FROM $_tableName'),
+    );
     return (result.first['count'] as int?) ?? 0;
   }
 
   /// Case insensitive search across the title and the body.
   Future<List<Note>> searchNotes(String query) async {
-    final Database db = await database;
-    final List<Map<String, Object?>> rows = await db.query(
-      _tableName,
-      where: 'title LIKE ? OR content LIKE ?',
-      whereArgs: <Object?>['%$query%', '%$query%'],
-      orderBy: 'updatedAt DESC',
+    final List<Map<String, Object?>> rows = await _withDatabase(
+      (Database db) => db.query(
+        _tableName,
+        where: 'title LIKE ? OR content LIKE ?',
+        whereArgs: <Object?>['%$query%', '%$query%'],
+        orderBy: 'updatedAt DESC',
+      ),
     );
     return rows.map((Map<String, Object?> row) => Note.fromMap(row)).toList();
   }
@@ -245,49 +316,53 @@ class DatabaseHelper {
   // ---------------------------------------------------------------------------
 
   /// Inserts [note] and returns the new primary key.
-  Future<int> insertNote(Note note) async {
-    final Database db = await database;
-    return db.insert(
-      _tableName,
-      note.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
+  Future<int> insertNote(Note note) {
+    return _withDatabase(
+      (Database db) => db.insert(
+        _tableName,
+        note.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      ),
     );
   }
 
   /// Writes every user editable field of [note]. Returns the number of affected
   /// rows (`1` on success, `0` when the row no longer exists).
-  Future<int> updateNote(Note note) async {
+  Future<int> updateNote(Note note) {
     final int? id = note.id;
     if (id == null) {
       throw ArgumentError('Cannot update a note without an id: $note');
     }
-    final Database db = await database;
-    return db.update(
-      _tableName,
-      note.toMap(),
-      where: 'id = ?',
-      whereArgs: <Object?>[id],
+    return _withDatabase(
+      (Database db) => db.update(
+        _tableName,
+        note.toMap(),
+        where: 'id = ?',
+        whereArgs: <Object?>[id],
+      ),
     );
   }
 
   /// Deletes [id]. Returns the number of affected rows.
-  Future<int> deleteNote(int id) async {
-    final Database db = await database;
-    return db.delete(
-      _tableName,
-      where: 'id = ?',
-      whereArgs: <Object?>[id],
+  Future<int> deleteNote(int id) {
+    return _withDatabase(
+      (Database db) => db.delete(
+        _tableName,
+        where: 'id = ?',
+        whereArgs: <Object?>[id],
+      ),
     );
   }
 
   /// Empties the notebook but always keeps the tracked note, so the background
   /// service never ends up writing into a deleted row.
-  Future<int> deleteAllNotes() async {
-    final Database db = await database;
-    return db.delete(
-      _tableName,
-      where: 'id != ?',
-      whereArgs: <Object?>[Note.fixedNoteId],
+  Future<int> deleteAllNotes() {
+    return _withDatabase(
+      (Database db) => db.delete(
+        _tableName,
+        where: 'id != ?',
+        whereArgs: <Object?>[Note.fixedNoteId],
+      ),
     );
   }
 
@@ -319,9 +394,11 @@ class DatabaseHelper {
   Future<int> updateFixedNoteContent({
     required String content,
     required String updatedAt,
-  }) async {
-    final Database db = await database;
-    return _updateFixedNote(db, content: content, updatedAt: updatedAt);
+  }) {
+    return _withDatabase(
+      (Database db) =>
+          _updateFixedNote(db, content: content, updatedAt: updatedAt),
+    );
   }
 
   /// Background entry point: opens a private connection, writes the tracker note
