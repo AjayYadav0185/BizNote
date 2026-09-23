@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BizNote — Download</title>
+  <meta name="description" content="Download the latest BizNote APK or open the web app." />
+  <link rel="icon" type="image/png" href="/app/favicon.png" />
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #171a21;
+      --accent: #4f8cff;
+      --accent-2: #7c5cff;
+      --text: #e7ecf3;
+      --muted: #98a2b3;
+      --border: #262b36;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 600px at 20% -10%, rgba(79,140,255,0.18), transparent 60%),
+        radial-gradient(1000px 500px at 100% 10%, rgba(124,92,255,0.16), transparent 55%),
+        var(--bg);
+    }
+    .card {
+      width: 100%;
+      max-width: 460px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 36px 32px;
+      text-align: center;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.45);
+    }
+    .logo {
+      font-size: 52px;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+    h1 {
+      margin: 8px 0 6px;
+      font-size: 30px;
+      letter-spacing: -0.02em;
+    }
+    .tag {
+      margin: 0 0 26px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 14px 18px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: transform 0.08s ease, filter 0.15s ease, background 0.15s ease;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn.primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      box-shadow: 0 10px 24px rgba(79,140,255,0.35);
+    }
+    .btn.primary:hover { filter: brightness(1.08); }
+    .btn.ghost {
+      color: var(--text);
+      background: transparent;
+      border: 1px solid var(--border);
+    }
+    .btn.ghost:hover { background: #1e222b; }
+    .meta {
+      list-style: none;
+      margin: 26px 0 0;
+      padding: 18px 0 0;
+      border-top: 1px solid var(--border);
+      display: grid;
+      gap: 10px;
+      text-align: left;
+      font-size: 14px;
+    }
+    .meta li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--text);
+    }
+    .meta span { color: var(--muted); }
+    .note {
+      margin: 18px 0 0;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="logo">📝</div>
+    <h1>BizNote</h1>
+    <p class="tag">A production-ready, offline-first notepad built with Flutter.</p>
+
+    <div class="actions">
+      <a class="btn primary" href="/apk/BizNote.apk" download="BizNote.apk">
+        ⬇️ Download latest APK
+      </a>
+      <a class="btn ghost" href="/app/">
+        🚀 Open Web App
+      </a>
+    </div>
+
+    <ul class="meta">
+      <li><span>Version</span> 1.0.0+1</li>
+      <li><span>Platforms</span> Android &middot; Web</li>
+      <li><span>Download size</span> ~83 MB</li>
+    </ul>
+
+    <p class="note">
+      On Android, open the downloaded file to install. If prompted, allow
+      installs from unknown sources for your browser.
+    </p>
+  </main>
+</body>
+</html>

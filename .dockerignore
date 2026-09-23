@@ -1,0 +1,30 @@
+# VCS / CI
+.git/
+.github/
+
+# Dart / Flutter tooling & caches
+.dart_tool/
+**/pubspec_overrides.yaml
+
+# Local build artifacts (rebuilt inside the Docker image).
+# NOTE: apk/ is intentionally NOT ignored - the APK is copied into the image.
+build/
+logs/
+coverage/
+
+# Test suite (not needed to build the web app)
+test/
+
+# IDE / OS cruft
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Native platform folders are not required for `flutter build web`.
+# Keeping them out shrinks the Docker build context.
+ios/
+macos/
+linux/
+windows/
+android/
