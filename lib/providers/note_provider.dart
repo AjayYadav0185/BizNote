@@ -1,202 +1,269 @@
-import 'package:flutter/foundation.dart';
+import 'dart:async';
 
-import '../models/note.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+
 import '../database/database_helper.dart';
+import '../models/note.dart';
+import '../services/background_service.dart';
 import '../utils/date_formatter.dart';
 
-class NoteProvider with ChangeNotifier {
-  final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
+/// Bridges the SQLite `notes` table to the widget tree.
+///
+/// The background service runs in its own isolate and writes with its own
+/// connection, so this notifier pulls the rows back in whenever the service
+/// broadcasts an update, whenever the app is resumed, and through a slow
+/// safety-net poll for the cases where the event channel is missed.
+class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
+  /// [databaseHelper] and [enableBackgroundSync] exist for tests: production
+  /// code uses the defaults (the shared singleton + the live service stream).
+  NoteProvider({
+    DatabaseHelper? databaseHelper,
+    bool enableBackgroundSync = true,
+  }) : _databaseHelper = databaseHelper ?? DatabaseHelper.instance {
+    if (enableBackgroundSync) {
+      unawaited(startBackgroundSync());
+    }
+  }
 
-  /// List of all notes
-  List<Note> _notes = [];
+  /// Safety net poll. Cheap (one indexed `SELECT`) and only alive while the app
+  /// is running; the event stream below is the primary refresh trigger.
+  static const Duration _safetyNetInterval = Duration(seconds: 30);
 
-  /// The currently selected note (for editing)
-  Note? _selectedNote;
+  final DatabaseHelper _databaseHelper;
+  final FlutterBackgroundService _backgroundService = FlutterBackgroundService();
 
-  /// Whether the provider is currently loading data
-  bool _isLoading = false;
-
-  /// Search query for filtering notes
+  List<Note> _allNotes = <Note>[];
   String _searchQuery = '';
+  bool _isLoading = false;
+  bool _syncStarted = false;
+  StreamSubscription<Map<String, dynamic>?>? _serviceSubscription;
+  Timer? _safetyNetTimer;
 
-  /// List of currently filtered notes (after search)
-  List<Note> get filteredNotes => _notes;
+  /// Notes matching the current search query, newest first.
+  List<Note> get notes {
+    if (_searchQuery.isEmpty) {
+      return List<Note>.unmodifiable(_allNotes);
+    }
+    final String query = _searchQuery.toLowerCase();
+    return List<Note>.unmodifiable(
+      _allNotes.where(
+        (Note note) =>
+            note.title.toLowerCase().contains(query) ||
+            note.content.toLowerCase().contains(query),
+      ),
+    );
+  }
 
-  /// All notes
-  List<Note> get notes => _notes;
+  /// Every note in the database, ignoring the search query.
+  List<Note> get allNotes => List<Note>.unmodifiable(_allNotes);
 
-  /// Currently selected note
-  Note? get selectedNote => _selectedNote;
+  /// Total number of notes, used by the bottom action bar.
+  int get noteCount => _allNotes.length;
 
-  /// Loading state
+  /// True while the first read is in flight.
   bool get isLoading => _isLoading;
 
-  /// Search query
+  /// Current search query.
   String get searchQuery => _searchQuery;
 
-  /// Total count of notes
-  int get noteCount => _notes.length;
+  /// True when at least one note exists.
+  bool get hasNotes => _allNotes.isNotEmpty;
 
-  /// Initialize and load all notes from database
+  /// Starts the database <-> service bridge. Called automatically by the
+  /// constructor unless background sync was disabled.
+  Future<void> startBackgroundSync() async {
+    if (_syncStarted) {
+      return;
+    }
+    _syncStarted = true;
+
+    try {
+      WidgetsBinding.instance.addObserver(this);
+
+      // Primary trigger: the service isolate invokes `update` every time it
+      // rewrote the tracked note.
+      _serviceSubscription = _backgroundService
+          .on(BackgroundServiceMethod.update)
+          .listen((Map<String, dynamic>? event) {
+        debugPrint('[UI] service update received: $event');
+        unawaited(refreshFromDatabase());
+      });
+
+      _safetyNetTimer = Timer.periodic(_safetyNetInterval, (Timer timer) {
+        unawaited(refreshFromDatabase());
+      });
+    } catch (error) {
+      debugPrint('[UI] background sync unavailable: $error');
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      return;
+    }
+    // Coming back to the foreground: reconcile with the database and ask for a
+    // fresh fix instead of waiting for the next 15 minute tick.
+    unawaited(refreshFromDatabase());
+    requestImmediateLocationUpdate();
+  }
+
+  /// Asks the background isolate to run a location cycle right now.
+  void requestImmediateLocationUpdate() {
+    try {
+      _backgroundService.invoke(BackgroundServiceMethod.refreshLocation);
+    } catch (error) {
+      debugPrint('[UI] could not reach the background service: $error');
+    }
+  }
+
+  /// Stops the persistent service (the next app launch starts it again).
+  void pauseLocationTracking() {
+    try {
+      _backgroundService.invoke(BackgroundServiceMethod.stopService);
+    } catch (error) {
+      debugPrint('[UI] could not stop the background service: $error');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reads
+  // ---------------------------------------------------------------------------
+
+  /// First read, with a loading flag for the initial build.
   Future<void> loadNotes() async {
     _isLoading = true;
     notifyListeners();
+    try {
+      _allNotes = await _databaseHelper.getNotes();
+    } catch (error) {
+      debugPrint('[UI] loading notes failed: $error');
+      _allNotes = <Note>[];
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Re-reads the table without toggling the loading flag. Safe to call as often
+  /// as needed: listeners are only notified when something actually changed.
+  Future<void> refreshFromDatabase() async {
+    try {
+      _applyNotes(await _databaseHelper.getNotes());
+    } catch (error) {
+      debugPrint('[UI] refreshing notes failed: $error');
+    }
+  }
+
+  /// A single note straight from the database (used by the editor).
+  Future<Note?> getNoteById(int id) => _databaseHelper.getNoteById(id);
+
+  // ---------------------------------------------------------------------------
+  // Writes
+  // ---------------------------------------------------------------------------
+
+  /// Inserts or updates [note] depending on whether it already has an id.
+  /// Returns `true` when the write reached the database.
+  Future<bool> saveNote(Note note) async {
+    final String updatedAt = DateFormatter.formatForStorage(DateTime.now());
+    final Note stamped = note.copyWith(updatedAt: updatedAt);
 
     try {
-      _notes = await _databaseHelper.getNotes();
-      _filterNotes();
-    } catch (e) {
-      debugPrint('Error loading notes: $e');
-      _notes = [];
+      final int rows;
+      if (stamped.id == null) {
+        rows = await _databaseHelper.insertNote(stamped);
+      } else {
+        rows = await _databaseHelper.updateNote(stamped);
+      }
+      await refreshFromDatabase();
+      return rows > 0;
+    } catch (error) {
+      debugPrint('[UI] saving note failed: $error');
+      return false;
     }
-
-    _isLoading = false;
-    notifyListeners();
   }
 
-  /// Refresh notes from database
-  Future<void> refreshNotes() async {
-    await loadNotes();
-  }
-
-  /// Filter notes based on search query
-  void _filterNotes() {
-    if (_searchQuery.isEmpty) {
-      // No filtering needed, all notes are shown
-      return;
-    }
-
-    _notes = _notes
-        .where((note) =>
-            note.title.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-            note.content.toLowerCase().contains(_searchQuery.toLowerCase()))
-        .toList();
-  }
-
-  /// Set the search query and filter notes
-  void setSearchQuery(String query) {
-    _searchQuery = query;
-    _filterNotes();
-    notifyListeners();
-  }
-
-  /// Clear the search query
-  void clearSearchQuery() {
-    _searchQuery = '';
-    _filterNotes();
-    notifyListeners();
-  }
-
-  /// Set the currently selected note
-  void setSelectedNote(Note? note) {
-    _selectedNote = note;
-    notifyListeners();
-  }
-
-  /// Insert a new note into the database
-  Future<int> insertNote(String title, String content) async {
-    final now = DateTime.now();
-    final date = DateFormatter.formatDate(now);
-
-    final note = Note(
-      title: title,
-      content: content,
-      date: date,
+  /// Creates an empty note and returns its new id.
+  Future<int> createNote({String title = '', String content = ''}) async {
+    final int id = await _databaseHelper.insertNote(
+      Note(
+        title: title,
+        content: content,
+        updatedAt: DateFormatter.formatForStorage(DateTime.now()),
+      ),
     );
-
-    final id = await _databaseHelper.insertNote(note);
-    
-    // Reload notes to reflect the new note
-    await loadNotes();
-    
+    await refreshFromDatabase();
     return id;
   }
 
-  /// Update an existing note in the database
-  Future<bool> updateNote(Note note) async {
-    try {
-      final updatedNote = note.copyWith(
-        date: DateFormatter.formatDate(DateTime.now()),
-      );
-
-      final rowsAffected = await _databaseHelper.updateNote(updatedNote);
-      
-      if (rowsAffected > 0) {
-        // Update the local list
-        final index = _notes.indexWhere((n) => n.id == note.id);
-        if (index != -1) {
-          _notes[index] = updatedNote;
-        }
-        notifyListeners();
-        return true;
-      }
-      return false;
-    } catch (e) {
-      debugPrint('Error updating note: $e');
-      return false;
-    }
-  }
-
-  /// Delete a note from the database
+  /// Deletes [id]. The tracked note is protected because the background service
+  /// keeps writing into it.
   Future<bool> deleteNote(int id) async {
+    if (id == Note.fixedNoteId) {
+      debugPrint('[UI] the tracked note is owned by the background service');
+      return false;
+    }
     try {
-      final rowsAffected = await _databaseHelper.deleteNote(id);
-      
-      if (rowsAffected > 0) {
-        // Remove from local list
-        _notes.removeWhere((note) => note.id == id);
-        if (_selectedNote?.id == id) {
-          _selectedNote = null;
-        }
-        notifyListeners();
-        return true;
-      }
-      return false;
-    } catch (e) {
-      debugPrint('Error deleting note: $e');
+      final int rows = await _databaseHelper.deleteNote(id);
+      await refreshFromDatabase();
+      return rows > 0;
+    } catch (error) {
+      debugPrint('[UI] deleting note $id failed: $error');
       return false;
     }
   }
 
-  /// Delete multiple notes
-  Future<int> deleteNotes(List<int> ids) async {
-    int deletedCount = 0;
-    for (final id in ids) {
-      if (await deleteNote(id)) {
-        deletedCount++;
+  // ---------------------------------------------------------------------------
+  // Search
+  // ---------------------------------------------------------------------------
+
+  /// Applies the search query used by [notes].
+  void setSearchQuery(String query) {
+    if (_searchQuery == query) {
+      return;
+    }
+    _searchQuery = query;
+    notifyListeners();
+  }
+
+  /// Clears the search query.
+  void clearSearchQuery() {
+    if (_searchQuery.isEmpty) {
+      return;
+    }
+    _searchQuery = '';
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internals
+  // ---------------------------------------------------------------------------
+
+  /// Swaps in [notes] and notifies listeners only when the list really changed,
+  /// which keeps the 30 second safety-net poll from rebuilding for nothing.
+  void _applyNotes(List<Note> notes) {
+    if (listEquals(_allNotes, notes)) {
+      return;
+    }
+    _allNotes = notes;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _safetyNetTimer?.cancel();
+    _safetyNetTimer = null;
+    unawaited(_serviceSubscription?.cancel());
+    _serviceSubscription = null;
+    try {
+      if (_syncStarted) {
+        WidgetsBinding.instance.removeObserver(this);
       }
+    } catch (error) {
+      debugPrint('[UI] removeObserver failed: $error');
     }
-    return deletedCount;
-  }
-
-  /// Clear all notes (use with caution)
-  Future<int> clearAllNotes() async {
-    final count = await _databaseHelper.getNoteCount();
-    await _databaseHelper.deleteAllNotes();
-    _notes = [];
-    _selectedNote = null;
-    notifyListeners();
-    return count;
-  }
-
-  /// Select a note for editing by its ID
-  Future<Note?> selectNoteById(int id) async {
-    final note = await _databaseHelper.getNoteById(id);
-    if (note != null) {
-      _selectedNote = note;
-      notifyListeners();
-    }
-    return note;
-  }
-
-  /// Clear the selected note
-  void clearSelectedNote() {
-    _selectedNote = null;
-    notifyListeners();
-  }
-
-  /// Check if a note with the given ID exists
-  bool noteExists(int id) {
-    return _notes.any((note) => note.id == id);
+    super.dispose();
   }
 }

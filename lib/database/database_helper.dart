@@ -1,183 +1,323 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:sqflite/sqlite_api.dart';
 
 import '../models/note.dart';
+import '../utils/date_formatter.dart';
 
+/// Offline SQLite storage for [Note]s (`notepad.db`).
+///
+/// The file is touched by two isolates:
+///  * the UI isolate, which reuses the cached [instance] connection, and
+///  * the background service isolate, which opens its own short lived
+///    connection through [updateFixedNoteFromBackground].
+///
+/// Static fields are **not** shared between isolates, so the background task
+/// must never reuse the UI connection: [withIsolatedConnection] gives it a
+/// private connection that is opened and closed around a single write.
 class DatabaseHelper {
-  /// Database singleton instance
-  static Database? _database;
-
-  /// Database name and version
   static const String _databaseName = 'notepad.db';
   static const int _databaseVersion = 1;
+  static const String _tableName = Note.tableName;
 
-  /// Table name for notes
-  static const String _tableName = 'notes';
+  static Database? _database;
 
-  /// Private constructor to prevent instantiation
+  /// Private constructor: use [instance] (UI isolate) or the static helpers
+  /// (background isolate).
   DatabaseHelper._();
 
-  /// Singleton factory for DatabaseHelper
+  /// Singleton used by the presentation layer.
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  /// Getter for the database instance with lazy initialization
-  Future<Database> get database async {
-    _database ??= await _initDatabase();
-    return _database!;
-  }
+  /// Cached connection of the current isolate.
+  Future<Database> get database async =>
+      _database ??= await openIsolatedConnection();
 
-  /// Initializes the database by creating the file and tables
-  Future<Database> _initDatabase() async {
-    // Get the database path from the sqflite package
-    final databasePath = await getDatabasesPath();
-    
-    // Create the full path to the database file
-    final path = join(databasePath, _databaseName);
+  /// Absolute path of the database file, e.g.
+  /// `/data/data/com.biznote.notepad_app/databases/notepad.db`.
+  static Future<String> databaseFilePath() async =>
+      join(await getDatabasesPath(), _databaseName);
 
-    // Open the database with creation logic
+  /// Opens a brand new, **uncached** connection with the full schema hooks
+  /// attached, so even the very first background write creates the table and
+  /// seeds the fixed note when the UI never ran before.
+  static Future<Database> openIsolatedConnection() async {
     return openDatabase(
-      path,
+      await databaseFilePath(),
       version: _databaseVersion,
+      onConfigure: _onConfigure,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
-      onConfigure: (db) async {
-        // Enable foreign keys if needed in future
-        await db.execute('PRAGMA foreign_keys = ON');
-      },
+      onOpen: _onOpen,
     );
   }
 
-  /// Creates the notes table when the database is first created
-  Future<void> _onCreate(Database db, int version) async {
+  /// Runs [action] on a dedicated connection and always closes it, even when
+  /// [action] throws.
+  static Future<T> withIsolatedConnection<T>(
+    Future<T> Function(Database db) action,
+  ) async {
+    final Database db = await openIsolatedConnection();
+    try {
+      return await action(db);
+    } finally {
+      await db.close();
+    }
+  }
+
+  static Future<void> _onConfigure(Database db) async {
+    await db.execute('PRAGMA foreign_keys = ON');
+  }
+
+  /// Creates the `notes` table and seeds the fixed tracker note.
+  static Future<void> _onCreate(Database db, int version) async {
     await db.execute('''
       CREATE TABLE $_tableName (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id INTEGER PRIMARY KEY,
         title TEXT NOT NULL,
         content TEXT NOT NULL,
-        date TEXT NOT NULL
+        updatedAt TEXT NOT NULL
       )
     ''');
+    await _seedFixedNote(db);
   }
 
-  /// Handles database upgrades when the version number changes
-  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Handle future schema migrations here
-    if (oldVersion < 2) {
-      // Example migration: add new columns or tables
+  /// Migration hook. The fixed note is re-verified in [_onOpen] afterwards.
+  static Future<void> _onUpgrade(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    // No migrations yet: version 1 is the first schema that ships with the
+    // background location tracker.
+  }
+
+  /// Runs after `onCreate`/`onUpgrade` and on every plain `openDatabase()` call,
+  /// which makes it the safest place to guarantee the fixed note exists.
+  static Future<void> _onOpen(Database db) async {
+    await _migrateLegacyTimestampColumn(db);
+    await _seedFixedNote(db);
+  }
+
+  /// Renames the legacy `date` column (pre-tracker schema) to `updatedAt` so
+  /// existing installs keep their notes instead of crashing on the new column.
+  static Future<void> _migrateLegacyTimestampColumn(Database db) async {
+    try {
+      final List<Map<String, Object?>> columns =
+          await db.rawQuery('PRAGMA table_info($_tableName)');
+      if (columns.isEmpty) {
+        await _onCreate(db, _databaseVersion);
+        return;
+      }
+      final Set<Object?> columnNames =
+          columns.map((Map<String, Object?> column) => column['name']).toSet();
+      if (columnNames.contains('date') && !columnNames.contains('updatedAt')) {
+        await db.execute(
+          'ALTER TABLE $_tableName RENAME COLUMN date TO updatedAt',
+        );
+        debugPrint('[DB] migrated legacy "date" column to "updatedAt"');
+      }
+    } catch (error) {
+      debugPrint('[DB] legacy column migration skipped: $error');
     }
   }
 
-  /// Closes the database connection
-  Future<void> close() async {
-    final db = _database;
-    if (db != null) {
-      await db.close();
-      _database = null;
+  /// Seeds the fixed note (`id = 1`) exactly once: the insert is skipped when a
+  /// note with [Note.fixedNoteId] already exists.
+  static Future<void> _seedFixedNote(Database db) async {
+    final List<Map<String, Object?>> existing = await db.query(
+      _tableName,
+      columns: const <String>['id'],
+      where: 'id = ?',
+      whereArgs: const <Object?>[Note.fixedNoteId],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) {
+      return;
     }
+
+    await db.insert(
+      _tableName,
+      <String, dynamic>{
+        'id': Note.fixedNoteId,
+        'title': Note.fixedNoteTitle,
+        'content': Note.fixedNotePlaceholder,
+        'updatedAt': DateFormatter.formatForStorage(DateTime.now()),
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    debugPrint('[DB] seeded the fixed note (id = ${Note.fixedNoteId})');
   }
 
-  /// Inserts a new note into the database
-  /// Returns the ID of the newly inserted note
+  /// Returns the fixed note, creating it first when it was deleted by hand or
+  /// when the row is missing for any other reason.
+  static Future<void> ensureFixedNoteExists() => withIsolatedConnection(
+        (Database db) => _seedFixedNote(db),
+      );
+
+  // ---------------------------------------------------------------------------
+  // Reads
+  // ---------------------------------------------------------------------------
+
+  /// All notes, most recently edited first. The tracker note therefore floats to
+  /// the top of the list right after every background update.
+  Future<List<Note>> getNotes() async {
+    final Database db = await database;
+    final List<Map<String, Object?>> rows = await db.query(
+      _tableName,
+      orderBy: 'updatedAt DESC',
+    );
+    return rows.map((Map<String, Object?> row) => Note.fromMap(row)).toList();
+  }
+
+  /// A single note, or `null` when it does not exist anymore.
+  Future<Note?> getNoteById(int id) async {
+    final Database db = await database;
+    final List<Map<String, Object?>> rows = await db.query(
+      _tableName,
+      where: 'id = ?',
+      whereArgs: <Object?>[id],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return null;
+    }
+    return Note.fromMap(rows.first);
+  }
+
+  /// Number of rows in the `notes` table.
+  Future<int> getNoteCount() async {
+    final Database db = await database;
+    final List<Map<String, Object?>> result =
+        await db.rawQuery('SELECT COUNT(*) AS count FROM $_tableName');
+    return (result.first['count'] as int?) ?? 0;
+  }
+
+  /// Case insensitive search across the title and the body.
+  Future<List<Note>> searchNotes(String query) async {
+    final Database db = await database;
+    final List<Map<String, Object?>> rows = await db.query(
+      _tableName,
+      where: 'title LIKE ? OR content LIKE ?',
+      whereArgs: <Object?>['%$query%', '%$query%'],
+      orderBy: 'updatedAt DESC',
+    );
+    return rows.map((Map<String, Object?> row) => Note.fromMap(row)).toList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Writes (UI isolate)
+  // ---------------------------------------------------------------------------
+
+  /// Inserts [note] and returns the new primary key.
   Future<int> insertNote(Note note) async {
-    final db = await database;
-    return await db.insert(
+    final Database db = await database;
+    return db.insert(
       _tableName,
       note.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
-  /// Retrieves all notes from the database, ordered by date (newest first)
-  Future<List<Note>> getNotes() async {
-    final db = await database;
-    
-    // Query all notes ordered by date descending (newest first)
-    final List<Map<String, dynamic>> maps = await db.query(
-      _tableName,
-      orderBy: 'date DESC',
-    );
-
-    // Convert the maps to Note objects
-    return maps.map((map) => Note.fromMap(map)).toList();
-  }
-
-  /// Retrieves a single note by its ID
-  Future<Note?> getNoteById(int id) async {
-    final db = await database;
-    
-    final List<Map<String, dynamic>> maps = await db.query(
-      _tableName,
-      where: 'id = ?',
-      whereArgs: [id],
-      limit: 1,
-    );
-
-    if (maps.isNotEmpty) {
-      return Note.fromMap(maps.first);
-    }
-    return null;
-  }
-
-  /// Updates an existing note in the database
-  /// Returns the number of rows affected (should be 1 for success)
+  /// Writes every user editable field of [note]. Returns the number of affected
+  /// rows (`1` on success, `0` when the row no longer exists).
   Future<int> updateNote(Note note) async {
-    final db = await database;
-    return await db.update(
+    final int? id = note.id;
+    if (id == null) {
+      throw ArgumentError('Cannot update a note without an id: $note');
+    }
+    final Database db = await database;
+    return db.update(
       _tableName,
       note.toMap(),
       where: 'id = ?',
-      whereArgs: [note.id],
+      whereArgs: <Object?>[id],
     );
   }
 
-  /// Deletes a note from the database by its ID
-  /// Returns the number of rows affected (should be 1 for success)
+  /// Deletes [id]. Returns the number of affected rows.
   Future<int> deleteNote(int id) async {
-    final db = await database;
-    return await db.delete(
+    final Database db = await database;
+    return db.delete(
       _tableName,
       where: 'id = ?',
-      whereArgs: [id],
+      whereArgs: <Object?>[id],
     );
   }
 
-  /// Deletes all notes from the database
-  /// Returns the number of rows affected
+  /// Empties the notebook but always keeps the tracked note, so the background
+  /// service never ends up writing into a deleted row.
   Future<int> deleteAllNotes() async {
-    final db = await database;
-    return await db.delete(_tableName);
-  }
-
-  /// Gets the count of all notes in the database
-  Future<int> getNoteCount() async {
-    final db = await database;
-    final List<Map<String, dynamic>> result = await db.rawQuery(
-      'SELECT COUNT(*) as count FROM $_tableName',
-    );
-    return result.first['count'] as int;
-  }
-
-  /// Searches for notes containing the given query in title or content
-  Future<List<Note>> searchNotes(String query) async {
-    final db = await database;
-    
-    final List<Map<String, dynamic>> maps = await db.query(
+    final Database db = await database;
+    return db.delete(
       _tableName,
-      where: 'title LIKE ? OR content LIKE ?',
-      whereArgs: ['%$query%', '%$query%'],
-      orderBy: 'date DESC',
+      where: 'id != ?',
+      whereArgs: <Object?>[Note.fixedNoteId],
     );
-
-    return maps.map((map) => Note.fromMap(map)).toList();
   }
 
-  /// Checks if the database exists
+  // ---------------------------------------------------------------------------
+  // Writes (background isolate)
+  // ---------------------------------------------------------------------------
+
+  /// Overwrites **only** `content` and `updatedAt` of the fixed note.
+  ///
+  /// This is the query executed by the 15 minute background loop: the title and
+  /// the primary key are never touched, and an existing `updatedAt` is replaced
+  /// with [updatedAt].
+  static Future<int> _updateFixedNote(
+    Database db, {
+    required String content,
+    required String updatedAt,
+    int noteId = Note.fixedNoteId,
+  }) {
+    return db.update(
+      _tableName,
+      <String, dynamic>{'content': content, 'updatedAt': updatedAt},
+      where: 'id = ?',
+      whereArgs: <Object?>[noteId],
+    );
+  }
+
+  /// Same as [_updateFixedNote] but on the connection of the calling isolate
+  /// (used by the UI isolate, e.g. for a manual refresh).
+  Future<int> updateFixedNoteContent({
+    required String content,
+    required String updatedAt,
+  }) async {
+    final Database db = await database;
+    return _updateFixedNote(db, content: content, updatedAt: updatedAt);
+  }
+
+  /// Background entry point: opens a private connection, writes the tracker note
+  /// and closes the connection again.
+  ///
+  /// The isolated connection is intentional. The background service runs in its
+  /// own isolate, so it cannot (and must not) reuse the cached connection of the
+  /// UI isolate; a short lived connection also guarantees that SQLite flushes
+  /// the write to disk before the isolate is allowed to be suspended.
+  static Future<int> updateFixedNoteFromBackground({
+    required String content,
+    required String updatedAt,
+  }) {
+    return withIsolatedConnection(
+      (Database db) => _updateFixedNote(db, content: content, updatedAt: updatedAt),
+    );
+  }
+
+  /// Closes the cached connection of the current isolate.
+  Future<void> close() async {
+    final Database? db = _database;
+    if (db != null) {
+      await db.close();
+      _database = null;
+    }
+  }
+
+  /// True when the database file already exists on disk.
   Future<bool> databaseExists() async {
-    final databasePath = await getDatabasesPath();
-    final path = join(databasePath, _databaseName);
-    return File(path).exists();
+    return File(await databaseFilePath()).exists();
   }
 }

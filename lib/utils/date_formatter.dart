@@ -52,4 +52,26 @@ class DateFormatter {
   static String formatFullDateTime(DateTime date) {
     return DateFormat('EEEE, d MMMM yyyy \'at\' h:mm a').format(date);
   }
+
+  /// Formats the timestamp that is embedded in the tracked note body.
+  ///
+  /// Example: `23/09/2026 12:20 PM`
+  static String formatTrackerTimestamp(DateTime date) {
+    return DateFormat('dd/MM/yyyy h:mm a').format(date);
+  }
+
+  /// Converts a value written by [formatForStorage] into the label used by the
+  /// Notes list ("Today", "Yesterday", "Monday", "23/09/26").
+  static String formatRelativeFromStorage(String storedValue) {
+    final DateTime? parsed = parseFromStorage(storedValue);
+    return parsed == null ? storedValue : formatRelativeDate(parsed);
+  }
+
+  /// Converts a value written by [formatForStorage] into the long form label
+  /// used by the editor footer,
+  /// e.g. "Monday, 23 September 2026 at 12:20 PM".
+  static String formatFullFromStorage(String storedValue) {
+    final DateTime? parsed = parseFromStorage(storedValue);
+    return parsed == null ? storedValue : formatFullDateTime(parsed);
+  }
 }

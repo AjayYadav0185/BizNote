@@ -10,10 +10,17 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.6
+  # Local, offline-first persistence.
   sqflite: ^2.3.0
   path: ^1.8.3
+  # Timestamp formatting ("23/09/2026 12:20 PM").
   intl: ^0.19.0
+  # Bridges the SQLite database to the presentation layer (ChangeNotifier).
   provider: ^6.1.1
+  # Foreground/background geolocation + permission handling.
+  geolocator: ^14.0.3
+  # Persistent foreground service on Android + BGTaskScheduler on iOS.
+  flutter_background_service: ^5.1.0
 
 dev_dependencies:
   flutter_test:
