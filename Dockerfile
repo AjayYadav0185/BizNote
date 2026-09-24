@@ -1,4 +1,4 @@
-# ---- Stage 1: build the Flutter web app ----
+# ---- Stage 1: build the Flutter web and Android artifacts ----
 FROM ghcr.io/cirruslabs/flutter:stable AS build
 WORKDIR /app
 
@@ -18,7 +18,8 @@ RUN flutter build web --release --base-href /app/
 # Always regenerate the downloadable Android APK from the same source revision
 # used for the web app. Overwriting apk/BizNote.apk here also ensures that a
 # stale APK checked into the build context can never be copied into the image.
-RUN flutter build apk --release && \
+RUN mkdir -p apk && \
+    flutter build apk --release --no-pub && \
     cp build/app/outputs/flutter-apk/app-release.apk apk/BizNote.apk && \
     test -s apk/BizNote.apk
 
