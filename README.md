@@ -65,10 +65,13 @@ locations/
 ```
 
 Fields: `status`, `hasFix`, `updatedAt` (`yyyy-MM-dd HH:mm:ss`),
-`timestampMillis` and, when a fix exists, `latitude`, `longitude`,
-`accuracy`, `altitude`, `speed`, `heading`. Coordinate fields are omitted
-when there is no fix, so a `set` clears stale coordinates instead of
-leaving the previous ones behind.
+`timestampMillis`, `deviceId`, `phoneNumber` and, when a fix exists,
+`latitude`, `longitude`, `accuracy`, `altitude`, `speed`, `heading`.
+Coordinate fields are omitted when there is no fix, so a `set` clears stale
+coordinates instead of leaving the previous ones behind. `deviceId` /
+`phoneNumber` come from the one-time welcome setup (see below) and are read
+fresh from the local database on every tick, so a corrected number shows up in
+the very next entry.
 
 ### One-time setup
 
@@ -161,7 +164,8 @@ Database, keyed by the primary key of the local `notes` table:
 notes/
   <note id>/
     id, title, content, updatedAt, updatedAtMillis,
-    sortOrder, isTracker, syncedAt, syncedAtMillis
+    sortOrder, isTracker, syncedAt, syncedAtMillis,
+    deviceId, phoneNumber
 ```
 
 - `updatedAt` is the record's timestamp in `yyyy-MM-dd HH:mm:ss`, exactly the
@@ -171,6 +175,23 @@ notes/
 - `sortOrder` is the position in the hand ordered list and `isTracker` marks the
   note the background location service owns. A row without an id (a note that
   was never saved) cannot be addressed and is skipped.
+- `deviceId` / `phoneNumber` come from the one-time welcome setup below, so
+  every record says which device and which customer saved it. Saving the number
+  re-uploads the whole notebook, so notes written before the setup carry the
+  identity too.
+
+### One-time setup (device id + mobile number)
+
+On first launch the app generates a stable per-install `deviceId` (a random
+UUID, no hardware identifier) and stores it in the single-row `profile` table.
+`HomeScreen` then shows `WelcomeScreen` once and asks the customer for their
+mobile number (7–15 digits, country code included); the number is normalized
+(`+91 98765 43210` → `+919876543210`) and stored next to the device id. Later
+launches skip the screen because `NoteProvider.hasProfile` is already true.
+Both fields travel with **every** Firebase write (`notes/<id>`,
+`locations/latest`, `locations/history`) and are covered by
+`test/background_cycle_test.dart` (the cycle stamps them) and
+`test/note_cloud_sync_test.dart`.
 
 | What happens | Cloud write |
 | --- | --- |

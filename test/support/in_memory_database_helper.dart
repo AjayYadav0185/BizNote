@@ -9,8 +9,19 @@ import 'package:sqflite/sqflite.dart';
 /// Shared by `notes_flow_test.dart` (widget flows) and `note_cloud_sync_test.dart`
 /// (what the provider mirrors to Firebase).
 class InMemoryDatabaseHelper implements DatabaseHelper {
-  InMemoryDatabaseHelper({List<Note> seeded = const <Note>[]})
-      : _notes = List<Note>.of(seeded);
+  InMemoryDatabaseHelper({
+    List<Note> seeded = const <Note>[],
+    DeviceProfile? profile,
+    bool seedCompletedProfile = true,
+  })  : _notes = List<Note>.of(seeded),
+        _profile = profile ??
+            (seedCompletedProfile
+                ? const DeviceProfile(
+                    deviceId: 'test-device-id',
+                    phoneNumber: '+911234567890',
+                    updatedAt: '2026-09-24 12:00:00',
+                  )
+                : null);
 
   final List<Note> _notes;
   DeviceProfile? _profile;

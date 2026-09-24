@@ -6,6 +6,7 @@ import '../providers/note_provider.dart';
 import '../services/background_service.dart';
 import '../utils/date_formatter.dart';
 import 'editor_screen.dart';
+import 'welcome_screen.dart';
 
 /// Home screen styled after the iPhone Notes app: large bold header, search
 /// field, note list and a bottom action bar with the note count and the compose
@@ -41,8 +42,36 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) {
         return;
       }
-      context.read<NoteProvider>().loadNotes();
+      final NoteProvider provider = context.read<NoteProvider>();
+      // The profile is loaded first: its device id generation adds a write and
+      // a notify, so starting the notes read before it finished made the
+      // startup cloud mirror race itself.
+      provider.loadProfile().whenComplete(() {
+        if (!mounted) {
+          return;
+        }
+        provider.loadNotes();
+        _maybeShowWelcome();
+      });
     });
+  }
+
+  /// Shows the one-time mobile number setup on first launch. Runs once the
+  /// profile row is in memory; skipped on later launches because the stored
+  /// number is already there.
+  Future<void> _maybeShowWelcome() async {
+    final NoteProvider provider = context.read<NoteProvider>();
+    // The profile read above already finished, but keep the guard: the sheet
+    // must never appear before the identity is known.
+    if (!provider.isProfileLoaded || provider.hasProfile) {
+      return;
+    }
+    await Navigator.of(context).push(
+      CupertinoPageRoute<bool>(
+        fullscreenDialog: true,
+        builder: (BuildContext context) => const WelcomeScreen(),
+      ),
+    );
   }
 
   @override

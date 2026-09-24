@@ -213,18 +213,11 @@ void main() {
       cloud,
     );
     await provider.loadNotes();
-    // Let the initial read's own mirror land first, then clear — otherwise the
-    // (slower, profile-loading) startup sync and the reorder sync race and the
-    // test sees two snapshots instead of the one the reorder produced.
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await _settle();
     cloud.snapshots.clear();
 
     await provider.reorderNotes(1, 0);
-    // The reorder mirror is fire-and-forget on top of a lazy profile read
-    // (first launch mints the device id), so let both futures land before
-    // asserting — the test only cares about the mirror triggered by the
-    // reorder itself.
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await _settle();
 
     expect(cloud.snapshots, hasLength(1));
     expect(
@@ -293,6 +286,34 @@ void main() {
     expect(await provider.syncNotesToFirebase(), isNull);
   });
 
+  test('the mobile number setup stores the number and re-uploads the notebook',
+      () async {
+    final _RecordingFirebaseService cloud = _RecordingFirebaseService();
+    final InMemoryDatabaseHelper database = InMemoryDatabaseHelper(
+      seeded: <Note>[_note(id: 1)],
+      seedCompletedProfile: false,
+    );
+    final NoteProvider provider = _provider(database, cloud);
+    await provider.loadNotes();
+    await _settle();
+    cloud.snapshots.clear();
+
+    expect(provider.hasProfile, isFalse);
+
+    expect(await provider.savePhoneNumber('abc'), isFalse);
+    expect(provider.hasProfile, isFalse);
+
+    expect(await provider.savePhoneNumber('+91 98765 43210'), isTrue);
+    await _settle();
+
+    expect(provider.hasProfile, isTrue);
+    expect(provider.profile?.deviceId, isNotEmpty);
+    expect(provider.profile?.phoneNumber, '+919876543210');
+    expect((await database.getProfile())?.phoneNumber, '+919876543210');
+    // Saving the number changed the identity, so the notebook is pushed again.
+    expect(cloud.snapshots, isNotEmpty);
+  });
+
   testWidgets('the cloud button pushes the notebook and reports the result',
       (WidgetTester tester) async {
     final _RecordingFirebaseService cloud = _RecordingFirebaseService();
@@ -350,5 +371,71 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('could not be uploaded'), findsOneWidget);
+  });
+
+  testWidgets('the welcome screen appears once, until a number is stored', (
+    WidgetTester tester,
+  ) async {
+    final InMemoryDatabaseHelper database = InMemoryDatabaseHelper(
+      seeded: <Note>[_note(id: 1)],
+      seedCompletedProfile: false,
+    );
+    final NoteProvider provider = _provider(
+      database,
+      _RecordingFirebaseService(),
+    );
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<NoteProvider>.value(
+        value: provider,
+        child: const CupertinoApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // First launch: no stored number yet, so the one-time setup opens.
+    expect(find.text('Welcome to BizNote'), findsOneWidget);
+
+    // An invalid number keeps the sheet open with an error …
+    await tester.enterText(
+      find.byType(CupertinoTextField),
+      'abc',
+    );
+    await tester.tap(find.text('Save & Continue'));
+    await tester.pumpAndSettle();
+    expect(find.text('Welcome to BizNote'), findsOneWidget);
+    expect(find.textContaining('valid mobile number'), findsOneWidget);
+
+    // … while a valid one stores the number and closes the sheet.
+    await tester.enterText(
+      find.byType(CupertinoTextField),
+      '+91 98765 43210',
+    );
+    await tester.tap(find.text('Save & Continue'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Welcome to BizNote'), findsNothing);
+    expect((await database.getProfile())?.phoneNumber, '+919876543210');
+    expect(provider.hasProfile, isTrue);
+  });
+
+  testWidgets('a stored number skips the welcome screen', (
+    WidgetTester tester,
+  ) async {
+    final NoteProvider provider = _provider(
+      InMemoryDatabaseHelper(seeded: <Note>[_note(id: 1)]),
+      _RecordingFirebaseService(),
+    );
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<NoteProvider>.value(
+        value: provider,
+        child: const CupertinoApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Welcome to BizNote'), findsNothing);
+    expect(find.text('Notes'), findsOneWidget);
   });
 }
