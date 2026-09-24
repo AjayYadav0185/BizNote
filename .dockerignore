@@ -6,8 +6,8 @@
 .dart_tool/
 **/pubspec_overrides.yaml
 
-# Local build artifacts (rebuilt inside the Docker image).
-# NOTE: apk/ is intentionally NOT ignored - the APK is copied into the image.
+# Local build artifacts are rebuilt inside the Docker image. The APK is
+# regenerated there and then copied into the final nginx image.
 build/
 logs/
 coverage/
@@ -21,10 +21,7 @@ test/
 .vscode/
 .DS_Store
 
-# Native platform folders are not required for `flutter build web`.
-# Keeping them out shrinks the Docker build context.
-ios/
-macos/
-linux/
-windows/
-android/
+# Android sources are required to regenerate the downloadable APK.
+# Machine-local SDK paths and generated IDE state must not enter the image.
+android/local.properties
+android/.gradle/

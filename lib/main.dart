@@ -6,6 +6,7 @@ import 'database/database_helper.dart';
 import 'screens/home_screen.dart';
 import 'services/background_service.dart';
 import 'services/location_service.dart';
+import 'theme/app_theme.dart';
 
 /// Boots the app and hooks the background service into the native OS layer.
 Future<void> main() async {
@@ -150,24 +151,7 @@ class _BizNoteAppState extends State<BizNoteApp> {
         title: 'Notes',
         debugShowCheckedModeBanner: false,
         navigatorKey: _navigatorKey,
-        theme: const CupertinoThemeData(
-          brightness: Brightness.light,
-          primaryColor: CupertinoColors.systemBlue,
-          scaffoldBackgroundColor: Color(0xFFFFFEFE),
-          barBackgroundColor: Color(0xFFF2F2F7),
-          textTheme: CupertinoTextThemeData(
-            navTitleTextStyle: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-              color: CupertinoColors.black,
-            ),
-            navLargeTitleTextStyle: TextStyle(
-              fontSize: 34,
-              fontWeight: FontWeight.bold,
-              color: CupertinoColors.black,
-            ),
-          ),
-        ),
+        theme: appTheme,
         home: const HomeScreen(),
       ),
     );

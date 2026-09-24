@@ -23,7 +23,10 @@ class EditorScreen extends StatefulWidget {
 }
 
 class _EditorScreenState extends State<EditorScreen> {
-  static const Color _canvasColor = Color(0xFFFFFEFE);
+  CupertinoThemeData get _theme => CupertinoTheme.of(context);
+
+  Color _resolveColor(Color color) =>
+      CupertinoDynamicColor.resolve(color, context);
 
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _bodyController = TextEditingController();
@@ -165,9 +168,9 @@ class _EditorScreenState extends State<EditorScreen> {
       return;
     }
 
-    final Note draft = (_note ??
-            Note(title: title, content: body, updatedAt: ''))
-        .copyWith(title: title, content: body);
+    final Note draft =
+        (_note ?? Note(title: title, content: body, updatedAt: ''))
+            .copyWith(title: title, content: body);
 
     _isSaving = true;
     if (mounted) {
@@ -262,10 +265,10 @@ class _EditorScreenState extends State<EditorScreen> {
   /// Nav bar with the "Done" action over a border free canvas.
   Widget _buildScaffold() {
     return CupertinoPageScaffold(
-      backgroundColor: _canvasColor,
+      backgroundColor: _theme.scaffoldBackgroundColor,
       navigationBar: CupertinoNavigationBar(
         border: null,
-        backgroundColor: _canvasColor,
+        backgroundColor: _theme.scaffoldBackgroundColor,
         previousPageTitle: 'Notes',
         trailing: CupertinoButton(
           minimumSize: Size.zero,
@@ -273,10 +276,10 @@ class _EditorScreenState extends State<EditorScreen> {
           onPressed: _isSaving ? null : () => _save(popAfterSave: true),
           child: Text(
             _isSaving ? 'Saving…' : 'Done',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 17,
               fontWeight: FontWeight.w600,
-              color: CupertinoColors.systemBlue,
+              color: _theme.primaryColor,
             ),
           ),
         ),
@@ -307,9 +310,9 @@ class _EditorScreenState extends State<EditorScreen> {
             Text(
               _loadError!,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 15,
-                color: CupertinoColors.systemGrey,
+                color: _resolveColor(CupertinoColors.secondaryLabel),
               ),
             ),
             const SizedBox(height: 14),
@@ -340,15 +343,14 @@ class _EditorScreenState extends State<EditorScreen> {
                   padding: EdgeInsets.zero,
                   decoration: null,
                   placeholder: 'Title',
-                  style: const TextStyle(
+                  style: _theme.textTheme.textStyle.copyWith(
                     fontSize: 22,
                     fontWeight: FontWeight.w600,
-                    color: CupertinoColors.black,
                   ),
-                  placeholderStyle: const TextStyle(
+                  placeholderStyle: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.w600,
-                    color: Color(0xFFC7C7CC),
+                    color: _resolveColor(CupertinoColors.placeholderText),
                   ),
                   textInputAction: TextInputAction.next,
                   onSubmitted: (String value) => _bodyFocusNode.requestFocus(),
@@ -367,14 +369,13 @@ class _EditorScreenState extends State<EditorScreen> {
                     placeholder: 'Start writing…',
                     keyboardType: TextInputType.multiline,
                     textInputAction: TextInputAction.newline,
-                    style: const TextStyle(
+                    style: _theme.textTheme.textStyle.copyWith(
                       fontSize: 17,
                       height: 1.35,
-                      color: CupertinoColors.black,
                     ),
-                    placeholderStyle: const TextStyle(
+                    placeholderStyle: TextStyle(
                       fontSize: 17,
-                      color: Color(0xFFC7C7CC),
+                      color: _resolveColor(CupertinoColors.placeholderText),
                     ),
                   ),
                 ),
@@ -394,19 +395,23 @@ class _EditorScreenState extends State<EditorScreen> {
         ? 'Refreshed every 15 minutes by the background service'
         : 'Last updated $_updatedAtLabel';
 
+    final Color secondaryLabelColor =
+        _resolveColor(CupertinoColors.secondaryLabel);
+    final Color separatorColor = _resolveColor(CupertinoColors.separator);
+
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(
-          top: BorderSide(color: Color(0xFFE5E5EA), width: 0.5),
+          top: BorderSide(color: separatorColor, width: 0.5),
         ),
       ),
       child: Row(
         children: <Widget>[
-          const Icon(
+          Icon(
             CupertinoIcons.time,
             size: 13,
-            color: CupertinoColors.systemGrey,
+            color: secondaryLabelColor,
           ),
           const SizedBox(width: 5),
           Expanded(
@@ -414,9 +419,9 @@ class _EditorScreenState extends State<EditorScreen> {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
-                color: CupertinoColors.systemGrey,
+                color: secondaryLabelColor,
               ),
             ),
           ),

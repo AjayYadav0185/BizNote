@@ -18,11 +18,10 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  static const Color _canvasColor = Color(0xFFFFFFFF);
-  static const Color _barColor = Color(0xFFF9F9F9);
-  static const Color _dividerColor = Color(0xFFE5E5EA);
-  static const Color _dateColor = Color(0xFF8E8E93);
-  static const Color _previewColor = Color(0xFF8E8E93);
+  CupertinoThemeData get _theme => CupertinoTheme.of(context);
+
+  Color _resolveColor(Color color) =>
+      CupertinoDynamicColor.resolve(color, context);
 
   /// Notepad illustration bundled through the `lib/assets/` pubspec entry.
   static const String _emptyStateAsset = 'lib/assets/note.webp';
@@ -60,7 +59,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
-      backgroundColor: _canvasColor,
+      backgroundColor: _theme.scaffoldBackgroundColor,
       child: SafeArea(
         bottom: false,
         child: Column(
@@ -77,18 +76,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Large, bold "Notes" title.
   Widget _buildHeader() {
-    return const Padding(
-      padding: EdgeInsets.fromLTRB(20, 8, 20, 2),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 2),
       child: Row(
         children: <Widget>[
           Expanded(
             child: Text(
               'Notes',
-              style: TextStyle(
-                fontSize: 34,
-                fontWeight: FontWeight.bold,
+              style: _theme.textTheme.navLargeTitleTextStyle.copyWith(
                 letterSpacing: -0.8,
-                color: CupertinoColors.black,
               ),
             ),
           ),
@@ -174,8 +170,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final String updatedAtLabel =
         DateFormatter.formatRelativeFromStorage(note.updatedAt);
 
+    final Color secondaryLabelColor =
+        _resolveColor(CupertinoColors.secondaryLabel);
+    final Color separatorColor = _resolveColor(CupertinoColors.separator);
+
     Widget row = Container(
-      color: _canvasColor,
+      color: _theme.scaffoldBackgroundColor,
       child: Row(
         children: <Widget>[
           Expanded(
@@ -191,10 +191,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       note.displayTitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: _theme.textTheme.textStyle.copyWith(
                         fontSize: 17,
                         fontWeight: FontWeight.w600,
-                        color: CupertinoColors.black,
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -202,10 +201,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: <Widget>[
                         Text(
                           updatedAtLabel,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w500,
-                            color: _dateColor,
+                            color: secondaryLabelColor,
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -214,9 +213,9 @@ class _HomeScreenState extends State<HomeScreen> {
                             note.preview,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 15,
-                              color: _previewColor,
+                              color: secondaryLabelColor,
                             ),
                           ),
                         ),
@@ -248,7 +247,7 @@ class _HomeScreenState extends State<HomeScreen> {
         Container(
           height: 0.5,
           margin: const EdgeInsets.only(left: 20),
-          color: _dividerColor,
+          color: separatorColor,
         ),
       ],
     );
@@ -264,14 +263,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildDragHandle(int index) {
     return ReorderableDragStartListener(
       index: index,
-      child: const SizedBox(
+      child: SizedBox(
         width: 44,
         height: 44,
         child: Center(
           child: Icon(
             CupertinoIcons.line_horizontal_3,
             size: 18,
-            color: Color(0xFFC7C7CC),
+            color: _resolveColor(CupertinoColors.tertiaryLabel),
           ),
         ),
       ),
@@ -294,7 +293,7 @@ class _HomeScreenState extends State<HomeScreen> {
           scale: 1 + (lift * 0.03),
           child: Container(
             decoration: BoxDecoration(
-              color: _canvasColor,
+              color: CupertinoTheme.of(context).scaffoldBackgroundColor,
               boxShadow: <BoxShadow>[
                 BoxShadow(
                   color: const Color(0x33000000),
@@ -369,17 +368,22 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       height: 52 + bottomInset,
       padding: EdgeInsets.fromLTRB(20, 0, 8, bottomInset),
-      decoration: const BoxDecoration(
-        color: _barColor,
-        border: Border(top: BorderSide(color: _dividerColor, width: 0.5)),
+      decoration: BoxDecoration(
+        color: _theme.barBackgroundColor,
+        border: Border(
+          top: BorderSide(
+            color: _resolveColor(CupertinoColors.separator),
+            width: 0.5,
+          ),
+        ),
       ),
       child: Row(
         children: <Widget>[
           Text(
             '$count ${count == 1 ? 'Note' : 'Notes'}',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
-              color: CupertinoColors.systemGrey,
+              color: _resolveColor(CupertinoColors.secondaryLabel),
             ),
           ),
           const Spacer(),
@@ -387,10 +391,10 @@ class _HomeScreenState extends State<HomeScreen> {
             minimumSize: Size.zero,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             onPressed: () => _openEditor(),
-            child: const Icon(
+            child: Icon(
               CupertinoIcons.square_pencil,
               size: 25,
-              color: CupertinoColors.systemBlue,
+              color: _theme.primaryColor,
             ),
           ),
         ],
@@ -401,6 +405,8 @@ class _HomeScreenState extends State<HomeScreen> {
   /// "No Notes" / "No Results" placeholder.
   Widget _buildEmptyState(NoteProvider provider) {
     final String query = provider.searchQuery;
+    final Color secondaryLabelColor =
+        _resolveColor(CupertinoColors.secondaryLabel);
     return Center(
       child: Padding(
         padding: const EdgeInsets.only(bottom: 60),
@@ -415,10 +421,10 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 14),
             Text(
               query.isEmpty ? 'No Notes' : 'No Results',
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w600,
-                color: CupertinoColors.systemGrey,
+                color: secondaryLabelColor,
               ),
             ),
             const SizedBox(height: 6),
@@ -427,9 +433,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? 'Tap the compose button to write one.'
                   : 'No note matches "$query".',
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 15,
-                color: CupertinoColors.systemGrey,
+                color: secondaryLabelColor,
               ),
             ),
           ],

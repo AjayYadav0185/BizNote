@@ -44,6 +44,10 @@ app.*.map.json
 /android/app/google-services.json
 /ios/Runner/GoogleService-Info.plist
 
+# The Docker build regenerates and overwrites this APK from the current source
+# before copying it into the nginx image.
+apk/*.apk
+
 # Android Studio will place build artifacts here
 /android/app/debug
 /android/app/profile

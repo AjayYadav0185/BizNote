@@ -15,6 +15,13 @@ RUN dart run sqflite_common_ffi_web:setup
 # Build the web release. It is served under the /app/ path, so base-href must match.
 RUN flutter build web --release --base-href /app/
 
+# Always regenerate the downloadable Android APK from the same source revision
+# used for the web app. Overwriting apk/BizNote.apk here also ensures that a
+# stale APK checked into the build context can never be copied into the image.
+RUN flutter build apk --release && \
+    cp build/app/outputs/flutter-apk/app-release.apk apk/BizNote.apk && \
+    test -s apk/BizNote.apk
+
 # ---- Stage 2: serve with nginx ----
 FROM nginx:1.27-alpine
 
@@ -43,7 +50,7 @@ COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 # Landing page at "/", the built Flutter app at "/app/", and the APK at "/apk/".
 COPY index.html /usr/share/nginx/html/index.html
 COPY --from=build /app/build/web /usr/share/nginx/html/app
-COPY apk/ /usr/share/nginx/html/apk/
+COPY --from=build /app/apk/BizNote.apk /usr/share/nginx/html/apk/BizNote.apk
 
 # Fallback for local runs; Render overrides this with its own PORT.
 ENV PORT=10000
