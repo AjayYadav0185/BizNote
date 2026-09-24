@@ -1,4 +1,5 @@
 import 'package:BizNote/database/database_helper.dart';
+import 'package:BizNote/models/device_profile.dart';
 import 'package:BizNote/models/note.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -12,6 +13,7 @@ class InMemoryDatabaseHelper implements DatabaseHelper {
       : _notes = List<Note>.of(seeded);
 
   final List<Note> _notes;
+  DeviceProfile? _profile;
   int _nextId = 100;
 
   @override
@@ -118,6 +120,15 @@ class InMemoryDatabaseHelper implements DatabaseHelper {
       content: content,
       updatedAt: updatedAt,
     );
+    return 1;
+  }
+
+  @override
+  Future<DeviceProfile?> getProfile() async => _profile;
+
+  @override
+  Future<int> saveProfile(DeviceProfile profile) async {
+    _profile = profile;
     return 1;
   }
 

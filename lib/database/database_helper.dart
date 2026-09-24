@@ -4,6 +4,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart' as web;
 
+import '../models/device_profile.dart';
 import '../models/note.dart';
 import '../utils/date_formatter.dart';
 
@@ -21,9 +22,12 @@ class DatabaseHelper {
   static const String _databaseName = 'notepad.db';
 
   /// Schema version. **2** added the `sortOrder` column that backs the manual
-  /// drag-to-reorder list (see [_ensureSchema] for the upgrade path).
-  static const int _databaseVersion = 2;
+  /// drag-to-reorder list, **3** added the single row `profile` table that holds
+  /// the one-time setup (device id + mobile number). See [_ensureSchema] for the
+  /// upgrade path.
+  static const int _databaseVersion = 3;
   static const String _tableName = Note.tableName;
+  static const String _profileTableName = DeviceProfile.tableName;
 
   /// Column that stores the position of a note in the reordered list.
   static const String _sortOrderColumn = 'sortOrder';
@@ -197,7 +201,8 @@ class DatabaseHelper {
     }
   }
 
-  /// Creates the `notes` table and seeds the fixed tracker note.
+  /// Creates the `notes` table, the `profile` table and seeds the fixed tracker
+  /// note.
   static Future<void> _onCreate(Database db, int version) async {
     await db.execute('''
       CREATE TABLE $_tableName (
@@ -208,7 +213,24 @@ class DatabaseHelper {
         $_sortOrderColumn INTEGER NOT NULL DEFAULT 0
       )
     ''');
+    await _createProfileTable(db);
     await _seedFixedNote(db);
+  }
+
+  /// The one-time setup row (device id + mobile number) lives in its own tiny
+  /// table so the notes schema and the "who is this device" data stay
+  /// independent. A single row is enforced by the fixed primary key the model
+  /// writes.
+  static Future<void> _createProfileTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE $_profileTableName (
+        id INTEGER PRIMARY KEY,
+        deviceId TEXT NOT NULL,
+        phoneNumber TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      )
+    ''');
+    debugPrint('[DB] created the "$_profileTableName" table');
   }
 
   /// Versioned migration hook. [_onOpen] re-runs the very same check on every
@@ -267,6 +289,16 @@ class DatabaseHelper {
 
       if (!columnNames.contains(_sortOrderColumn)) {
         await _addSortOrderColumn(db);
+      }
+
+      // Version 3 added the one-time setup table. Checked on every open (like
+      // the column above), so an install whose version number was bumped
+      // without the table actually being written still heals itself.
+      final List<Map<String, Object?>> profileTable = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '$_profileTableName'",
+      );
+      if (profileTable.isEmpty) {
+        await _createProfileTable(db);
       }
     } catch (error) {
       debugPrint('[DB] schema check skipped: $error');
@@ -369,6 +401,40 @@ class DatabaseHelper {
       ),
     );
     return rows.map((Map<String, Object?> row) => Note.fromMap(row)).toList();
+  }
+
+  /// The one-time setup row, or `null` before the customer ever entered a
+  /// mobile number.
+  Future<DeviceProfile?> getProfile() => _withDatabase(_readProfile);
+
+  /// Same read on a private connection, used by the background service isolate
+  /// so a cycle can stamp `deviceId` + `phoneNumber` onto every Firebase write.
+  static Future<DeviceProfile?> profileFromBackground() =>
+      withIsolatedConnection(_readProfile);
+
+  /// Stores (or replaces) the single profile row.
+  Future<int> saveProfile(DeviceProfile profile) =>
+      _withDatabase((Database db) => _upsertProfile(db, profile));
+
+  static Future<DeviceProfile?> _readProfile(Database db) async {
+    final List<Map<String, Object?>> rows = await db.query(
+      _profileTableName,
+      where: 'id = ?',
+      whereArgs: const <Object?>[DeviceProfile.fixedRowId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return null;
+    }
+    return DeviceProfile.fromMap(rows.first);
+  }
+
+  static Future<int> _upsertProfile(Database db, DeviceProfile profile) {
+    return db.insert(
+      _profileTableName,
+      profile.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   /// A single note, or `null` when it does not exist anymore.

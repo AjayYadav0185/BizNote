@@ -4,8 +4,10 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../models/device_profile.dart';
 import '../utils/date_formatter.dart';
 import 'firebase_bootstrap.dart';
+import 'firebase_note_service.dart';
 
 /// Pushes every tracker fix to Firebase Realtime Database.
 ///
@@ -53,10 +55,15 @@ class FirebaseLocationService {
 
   /// Writes one cycle to `locations/latest` and appends it to
   /// `locations/history`. Returns `true` only when both writes landed.
+  ///
+  /// [profile] is the one-time setup identity: `deviceId` and `phoneNumber` are
+  /// added to both nodes, so a fix always says which device and which customer
+  /// it belongs to.
   static Future<bool> sendLocation({
     required String status,
     Position? position,
     DateTime? timestamp,
+    DeviceProfile? profile,
   }) async {
     if (!await ensureInitialized()) {
       return false;
@@ -67,6 +74,7 @@ class FirebaseLocationService {
         status: status,
         position: position,
         timestamp: timestamp,
+        profile: profile,
       );
       await _writeToDatabase(payload).timeout(pushTimeout);
       debugPrint('[Firebase] location pushed · status=$status');
@@ -91,11 +99,13 @@ class FirebaseLocationService {
   /// Pure and synchronous (like [LocationService.buildTrackerContent]) so it
   /// can be unit tested without Firebase. Coordinate fields are **omitted**
   /// when there is no fix — a full `set` of this payload therefore clears
-  /// stale coordinates instead of leaving the previous ones behind.
+  /// stale coordinates instead of leaving the previous ones behind. [profile]
+  /// contributes `deviceId` + `phoneNumber` to every fix.
   static Map<String, dynamic> buildLocationPayload({
     required String status,
     Position? position,
     DateTime? timestamp,
+    DeviceProfile? profile,
   }) {
     final DateTime moment = timestamp ?? DateTime.now();
     final Map<String, dynamic> payload = <String, dynamic>{
@@ -103,6 +113,7 @@ class FirebaseLocationService {
       'hasFix': position != null,
       'updatedAt': DateFormatter.formatForStorage(moment),
       'timestampMillis': moment.millisecondsSinceEpoch,
+      ...FirebaseNoteService.identityFields(profile),
     };
 
     if (position != null) {

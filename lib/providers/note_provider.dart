@@ -5,10 +5,12 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 
 import '../database/database_helper.dart';
+import '../models/device_profile.dart';
 import '../models/note.dart';
 import '../services/background_service.dart';
 import '../services/firebase_note_service.dart';
 import '../utils/date_formatter.dart';
+import '../utils/device_id.dart';
 
 /// Bridges the SQLite `notes` table to the widget tree.
 ///
@@ -51,6 +53,8 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   String _searchQuery = '';
   bool _isLoading = false;
   bool _syncStarted = false;
+  DeviceProfile? _profile;
+  bool _profileLoaded = false;
   StreamSubscription<Map<String, dynamic>?>? _serviceSubscription;
   Timer? _safetyNetTimer;
 
@@ -83,6 +87,89 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// True when at least one note exists.
   bool get hasNotes => _allNotes.isNotEmpty;
+
+  /// The one-time setup record (device id + mobile number), or `null` while it
+  /// is still being read from disk.
+  DeviceProfile? get profile => _profile;
+
+  /// True once [loadProfile] finished, so the UI can tell "no profile yet" apart
+  /// from "not loaded yet".
+  bool get isProfileLoaded => _profileLoaded;
+
+  /// True when the welcome screen can be skipped: a usable mobile number is
+  /// stored and travels with every Firebase write.
+  bool get hasProfile => _profile?.needsPhoneNumber == false;
+
+  // ---------------------------------------------------------------------------
+  // Device profile (one-time setup)
+  // ---------------------------------------------------------------------------
+
+  /// Reads the stored profile and generates the device id on the very first
+  /// launch.
+  ///
+  /// The id is written to disk immediately (even before a number is entered) so
+  /// the app never comes back with a *different* identity after a restart.
+  Future<void> loadProfile() async {
+    try {
+      final DeviceProfile? stored = await _databaseHelper.getProfile();
+      if (stored != null) {
+        _profile = stored;
+      } else {
+        // First launch: mint the device id and persist it right away — even
+        // before a number is entered — so the identity can never change after a
+        // restart. The welcome screen only adds the phone number to it.
+        final DeviceProfile created = DeviceProfile(
+          deviceId: DeviceId.generate(),
+          phoneNumber: '',
+          updatedAt: DateFormatter.formatForStorage(DateTime.now()),
+        );
+        await _databaseHelper.saveProfile(created);
+        _profile = created;
+        debugPrint('[UI] generated device id ${created.deviceId}');
+      }
+    } catch (error) {
+      debugPrint('[UI] loading the device profile failed: $error');
+    } finally {
+      _profileLoaded = true;
+      notifyListeners();
+    }
+  }
+
+  /// One-time setup: stores the customer's mobile number next to the device id.
+  ///
+  /// Returns `true` when the number was stored. Existing notes are re-uploaded
+  /// right after, so the records that were saved before the setup carry the
+  /// identity too.
+  Future<bool> savePhoneNumber(String phoneNumber) async {
+    if (!DeviceProfile.isValidPhoneNumber(phoneNumber)) {
+      debugPrint('[UI] refusing to store an implausible phone number');
+      return false;
+    }
+
+    final DeviceProfile current = _profile ??
+        DeviceProfile(
+          deviceId: DeviceId.generate(),
+          phoneNumber: '',
+          updatedAt: DateFormatter.formatForStorage(DateTime.now()),
+        );
+    final DeviceProfile updated = current.withPhoneNumber(phoneNumber);
+
+    try {
+      await _databaseHelper.saveProfile(updated);
+    } catch (error) {
+      debugPrint('[UI] storing the mobile number failed: $error');
+      return false;
+    }
+
+    _profile = updated;
+    _profileLoaded = true;
+    notifyListeners();
+    debugPrint('[UI] mobile number saved for device ${updated.deviceId}');
+
+    // The identity changed, so the cloud copy of the notebook has to catch up.
+    unawaited(_mirrorAllNotes());
+    return true;
+  }
 
   /// Starts the database <-> service bridge. Called automatically by the
   /// constructor unless background sync was disabled; a no-op on platforms that
@@ -377,7 +464,10 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (notes.isEmpty) {
       return null;
     }
-    final bool pushed = await _firebaseService.syncNotes(notes);
+    final bool pushed = await _firebaseService.syncNotes(
+      notes,
+      profile: await _currentProfile(),
+    );
     if (!pushed) {
       return null;
     }
@@ -392,7 +482,7 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     try {
-      await _firebaseService.saveNote(note);
+      await _firebaseService.saveNote(note, profile: await _currentProfile());
     } catch (error) {
       debugPrint('[UI] Firebase mirror of note ${note.id} failed: $error');
     }
@@ -416,7 +506,10 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     try {
-      await _firebaseService.syncNotes(_allNotes);
+      await _firebaseService.syncNotes(
+        _allNotes,
+        profile: await _currentProfile(),
+      );
     } catch (error) {
       debugPrint('[UI] Firebase mirror of the notebook failed: $error');
     }
@@ -432,11 +525,25 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
       final Note? tracked =
           await _databaseHelper.getNoteById(Note.fixedNoteId);
       if (tracked != null) {
-        await _firebaseService.saveNote(tracked);
+        await _firebaseService.saveNote(
+          tracked,
+          profile: await _currentProfile(),
+        );
       }
     } catch (error) {
       debugPrint('[UI] Firebase mirror of the tracked note failed: $error');
     }
+  }
+
+  /// The device id + mobile number that every Firebase write carries.
+  ///
+  /// Loaded lazily so a mirror triggered before the welcome screen (or by a
+  /// test) still stamps the device id the app generated on first launch.
+  Future<DeviceProfile?> _currentProfile() async {
+    if (_profile == null) {
+      await loadProfile();
+    }
+    return _profile;
   }
 
   // ---------------------------------------------------------------------------

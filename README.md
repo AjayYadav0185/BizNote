@@ -110,6 +110,48 @@ not have reached Firebase).
 iOS: add `GoogleService-Info.plist` to `ios/Runner/` in Xcode (same Firebase
 project, iOS bundle id); the same Dart code path is used.
 
+### Verifying the 15 minute sync
+
+- **Firebase console** → *Realtime Database* → *Data*: `locations/latest` is
+  overwritten on every tick and `locations/history` gains exactly **one**
+  new push key per cycle, so the gap between two `updatedAt` values must be
+  about 15 minutes. `notes/1` (the tracker row) is refreshed at the same time.
+- **Device log** while the app is installed:
+
+  ```bash
+  adb logcat | grep -E "\[BG\]|Firebase"
+  ```
+
+  A healthy tick logs three lines in this order:
+
+  ```
+  [BG] cycle done · status=Active · rows=1 · 2026-09-24 13:43:59
+  [Firebase] location pushed · status=Active
+  [Firebase] initialized · databaseURL=https://…asia-southeast1.firebasedatabase.app
+  ```
+
+  `status=Permission Denied` / `GPS Signal Unavailable` are still pushed to
+  Firebase (they are the documented `status` values), so the trail also shows
+  *why* a cycle had no fix.
+- **REST smoke test** (no phone needed, exactly the payload a cycle writes):
+
+  ```bash
+  DB='https://bizarohq-b92c8-default-rtdb.asia-southeast1.firebasedatabase.app'
+  curl -X PUT "$DB/locations/latest.json" -H 'Content-Type: application/json' \
+    -d '{"status":"Active","hasFix":true,"updatedAt":"2026-09-24 13:43:59","timestampMillis":1790237639000,"latitude":12.9716,"longitude":77.5946,"accuracy":5.0,"altitude":900.0,"speed":0.0,"heading":0.0}'
+  curl "$DB/locations.json"      # read it back
+  ```
+
+  `HTTP 401 {"error":"Permission denied"}` means the database rules are still
+  locked (see step 4 above) — that is the only thing that can keep the app from
+  uploading, and it is logged as `[Firebase] … failed: … permission-denied`.
+
+The cycle itself is covered by `test/background_cycle_test.dart`, which runs one
+full `runLocationCycle` against injected writers and asserts that a single tick
+persists the note **and** publishes the same fix exactly once
+(`writeNote`/`publishLocation` exist for that test; production uses the
+database + Firebase implementations).
+
 ## Firebase notes sync
 
 Separately from the tracker, every note is mirrored to Firebase Realtime

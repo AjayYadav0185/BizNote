@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:BizNote/models/device_profile.dart';
 import 'package:BizNote/models/note.dart';
 import 'package:BizNote/providers/note_provider.dart';
 import 'package:BizNote/screens/home_screen.dart';
@@ -22,7 +23,8 @@ class _RecordingFirebaseService extends FirebaseNoteService {
   final List<List<Note>> snapshots = <List<Note>>[];
 
   @override
-  Future<bool> saveNote(Note note, {DateTime? timestamp}) async {
+  Future<bool> saveNote(Note note,
+      {DateTime? timestamp, DeviceProfile? profile}) async {
     saved.add(note);
     return succeeds;
   }
@@ -34,7 +36,8 @@ class _RecordingFirebaseService extends FirebaseNoteService {
   }
 
   @override
-  Future<bool> syncNotes(List<Note> notes, {DateTime? timestamp}) async {
+  Future<bool> syncNotes(List<Note> notes,
+      {DateTime? timestamp, DeviceProfile? profile}) async {
     snapshots.add(List<Note>.of(notes));
     return succeeds;
   }
@@ -210,10 +213,18 @@ void main() {
       cloud,
     );
     await provider.loadNotes();
+    // Let the initial read's own mirror land first, then clear — otherwise the
+    // (slower, profile-loading) startup sync and the reorder sync race and the
+    // test sees two snapshots instead of the one the reorder produced.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
     cloud.snapshots.clear();
 
     await provider.reorderNotes(1, 0);
-    await _settle();
+    // The reorder mirror is fire-and-forget on top of a lazy profile read
+    // (first launch mints the device id), so let both futures land before
+    // asserting — the test only cares about the mirror triggered by the
+    // reorder itself.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
 
     expect(cloud.snapshots, hasLength(1));
     expect(

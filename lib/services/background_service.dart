@@ -7,6 +7,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../database/database_helper.dart';
+import '../models/device_profile.dart';
 import '../models/note.dart';
 import '../utils/date_formatter.dart';
 import 'firebase_location_service.dart';
@@ -115,10 +116,65 @@ Future<void> onStart(ServiceInstance service) async {
   });
 }
 
+/// Persists one cycle into the local tracker note.
+///
+/// Injectable so a test can run a full cycle without a database; production
+/// uses [DatabaseHelper.updateFixedNoteFromBackground].
+typedef LocationNoteWriter = Future<int> Function({
+  required String content,
+  required String updatedAt,
+});
+
+/// Mirrors one cycle to Firebase Realtime Database.
+///
+/// Injectable so a test can assert what a cycle publishes without a network;
+/// production uses [FirebaseLocationService.sendLocation]. [profile] is the
+/// one-time setup identity read from the local database.
+typedef LocationCloudPublisher = Future<bool> Function({
+  required String status,
+  Position? position,
+  DateTime? timestamp,
+  DeviceProfile? profile,
+});
+
+/// Reads the one-time setup row (device id + mobile number) for a cycle.
+///
+/// Injectable so a test can run a cycle without a database; production uses
+/// [DatabaseHelper.profileFromBackground].
+typedef DeviceProfileReader = Future<DeviceProfile?> Function();
+
 /// One full cycle: verify permissions, capture a GPS fix, format it, write it
 /// into the fixed note through an isolated connection and finally publish the
 /// result to the UI isolate.
-Future<void> runLocationCycle(ServiceInstance service) async {
+///
+/// The same cycle also mirrors the fix to Firebase
+/// (`locations/latest` + `locations/history`) **including the `deviceId` and
+/// `phoneNumber`** of the one-time welcome setup, which is what makes the trail
+/// grow by exactly one attributable entry per 15 minute tick. [writeNote],
+/// [publishLocation] and [readProfile] exist for tests only.
+Future<void> runLocationCycle(
+  ServiceInstance service, {
+  LocationNoteWriter? writeNote,
+  LocationCloudPublisher? publishLocation,
+  DeviceProfileReader? readProfile,
+}) async {
+  final LocationNoteWriter persist =
+      writeNote ?? DatabaseHelper.updateFixedNoteFromBackground;
+  final LocationCloudPublisher publish =
+      publishLocation ?? FirebaseLocationService.sendLocation;
+  final DeviceProfileReader profileReader =
+      readProfile ?? DatabaseHelper.profileFromBackground;
+
+  // Who this fix belongs to: read once per cycle (a single indexed row), so a
+  // number the customer corrected on the welcome screen is picked up by the
+  // very next tick.
+  DeviceProfile? profile;
+  try {
+    profile = await profileReader();
+  } catch (error) {
+    debugPrint('[BG] reading the device profile failed: $error');
+  }
+
   final DateTime now = DateTime.now();
 
   String status;
@@ -150,10 +206,7 @@ Future<void> runLocationCycle(ServiceInstance service) async {
   int affectedRows = 0;
 
   try {
-    affectedRows = await DatabaseHelper.updateFixedNoteFromBackground(
-      content: content,
-      updatedAt: updatedAt,
-    );
+    affectedRows = await persist(content: content, updatedAt: updatedAt);
   } catch (error) {
     debugPrint('[BG] isolated database write failed: $error');
   }
@@ -164,10 +217,11 @@ Future<void> runLocationCycle(ServiceInstance service) async {
   // `locations/history`). Fail-soft by design: a missing config file, locked
   // database rules or no network only log, so the local note above is never
   // held hostage by the network (bounded by pushTimeout).
-  final bool firebaseSynced = await FirebaseLocationService.sendLocation(
+  final bool firebaseSynced = await publish(
     status: status,
     position: position,
     timestamp: now,
+    profile: profile,
   );
 
   // Mirror the newest fix into the ongoing Android notification.
@@ -190,6 +244,8 @@ Future<void> runLocationCycle(ServiceInstance service) async {
   service.invoke(BackgroundServiceMethod.update, <String, dynamic>{
     'noteId': Note.fixedNoteId,
     'status': status,
+    'deviceId': profile?.deviceId,
+    'phoneNumber': profile?.phoneNumber,
     'latitude': position?.latitude,
     'longitude': position?.longitude,
     'updatedAt': updatedAt,

@@ -4,6 +4,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/note.dart';
+import '../models/device_profile.dart';
 import '../utils/date_formatter.dart';
 import 'firebase_bootstrap.dart';
 
@@ -17,7 +18,8 @@ import 'firebase_bootstrap.dart';
 /// notes/
 ///   <note id>/              <- one object per record, overwritten on every save
 ///     id, title, content, updatedAt, updatedAtMillis,
-///     sortOrder, isTracker, syncedAt, syncedAtMillis
+///     sortOrder, isTracker, syncedAt, syncedAtMillis,
+///     deviceId, phoneNumber       <- from the one-time welcome setup
 /// ```
 ///
 /// The note id is the primary key of the local `notes` table, so a record maps
@@ -46,8 +48,13 @@ class FirebaseNoteService {
       FirebaseBootstrap.ensureInitialized();
 
   /// Writes (or overwrites) one record at `notes/<id>`. Returns `true` when the
-  /// write landed.
-  Future<bool> saveNote(Note note, {DateTime? timestamp}) async {
+  /// write landed. [profile] adds the one-time setup identity (`deviceId`,
+  /// `phoneNumber`) to the record.
+  Future<bool> saveNote(
+    Note note, {
+    DateTime? timestamp,
+    DeviceProfile? profile,
+  }) async {
     final int? id = note.id;
     if (id == null) {
       // The id is the key of the record; an unsaved note has nothing to map to.
@@ -61,7 +68,7 @@ class FirebaseNoteService {
     try {
       await FirebaseDatabase.instance
           .ref('$notesPath/$id')
-          .set(buildNotePayload(note, timestamp: timestamp))
+          .set(buildNotePayload(note, timestamp: timestamp, profile: profile))
           .timeout(pushTimeout);
       debugPrint('[Firebase] note $id pushed');
       return true;
@@ -96,7 +103,11 @@ class FirebaseNoteService {
   /// reorder (every `sortOrder` changed) and by the manual sync action. A full
   /// `set` is intentional: it prunes records that were deleted locally while
   /// the app was offline instead of leaving ghosts behind.
-  Future<bool> syncNotes(List<Note> notes, {DateTime? timestamp}) async {
+  Future<bool> syncNotes(
+    List<Note> notes, {
+    DateTime? timestamp,
+    DeviceProfile? profile,
+  }) async {
     if (notes.isEmpty) {
       // The tracker note is seeded on every database open, so an empty list
       // means "the local read failed", not "the user deleted everything".
@@ -111,7 +122,7 @@ class FirebaseNoteService {
     try {
       await FirebaseDatabase.instance
           .ref(notesPath)
-          .set(buildNotesSnapshot(notes, timestamp: timestamp))
+          .set(buildNotesSnapshot(notes, timestamp: timestamp, profile: profile))
           .timeout(pushTimeout);
       debugPrint('[Firebase] ${notes.length} notes pushed');
       return true;
@@ -126,10 +137,12 @@ class FirebaseNoteService {
   /// Pure and synchronous (like the payload builder of the location service) so
   /// it can be unit tested without Firebase. [timestamp] defaults to
   /// `DateTime.now()` and is the moment the record was pushed, which is what
-  /// makes a stale mirror visible from the dashboard.
+  /// makes a stale mirror visible from the dashboard; [profile] adds the
+  /// one-time setup identity to the record.
   static Map<String, dynamic> buildNotePayload(
     Note note, {
     DateTime? timestamp,
+    DeviceProfile? profile,
   }) {
     final int? id = note.id;
     final DateTime moment = timestamp ?? DateTime.now();
@@ -148,6 +161,24 @@ class FirebaseNoteService {
       'isTracker': note.isFixedNote,
       'syncedAt': DateFormatter.formatForStorage(moment),
       'syncedAtMillis': moment.millisecondsSinceEpoch,
+      ...identityFields(profile),
+    };
+  }
+
+  /// The `deviceId` / `phoneNumber` pair copied into every payload.
+  ///
+  /// Shared by this service and the location service so both nodes of the
+  /// database are attributable to the same device and customer. Empty values
+  /// are omitted rather than written as `null`, which keeps a payload without a
+  /// profile (first launch, before the welcome screen) byte-identical to what
+  /// the app sent before the setup existed.
+  static Map<String, dynamic> identityFields(DeviceProfile? profile) {
+    if (profile == null) {
+      return const <String, dynamic>{};
+    }
+    return <String, dynamic>{
+      if (profile.deviceId.isNotEmpty) 'deviceId': profile.deviceId,
+      if (profile.phoneNumber.isNotEmpty) 'phoneNumber': profile.phoneNumber,
     };
   }
 
@@ -156,12 +187,14 @@ class FirebaseNoteService {
   static Map<String, dynamic> buildNotesSnapshot(
     List<Note> notes, {
     DateTime? timestamp,
+    DeviceProfile? profile,
   }) {
     final DateTime moment = timestamp ?? DateTime.now();
     return <String, dynamic>{
       for (final Note note in notes)
         if (note.id != null)
-          '${note.id}': buildNotePayload(note, timestamp: moment),
+          '${note.id}':
+              buildNotePayload(note, timestamp: moment, profile: profile),
     };
   }
 }
