@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import '../database/database_helper.dart';
 import '../models/note.dart';
 import '../utils/date_formatter.dart';
+import 'firebase_location_service.dart';
 import 'location_service.dart';
 
 /// True when the platform can host the persistent location tracker.
@@ -159,6 +160,16 @@ Future<void> runLocationCycle(ServiceInstance service) async {
 
   debugPrint('[BG] cycle done · status=$status · rows=$affectedRows · $updatedAt');
 
+  // Mirror the same fix into Firebase Realtime Database (`locations/latest` +
+  // `locations/history`). Fail-soft by design: a missing config file, locked
+  // database rules or no network only log, so the local note above is never
+  // held hostage by the network (bounded by pushTimeout).
+  final bool firebaseSynced = await FirebaseLocationService.sendLocation(
+    status: status,
+    position: position,
+    timestamp: now,
+  );
+
   // Mirror the newest fix into the ongoing Android notification.
   if (service is AndroidServiceInstance) {
     try {
@@ -183,6 +194,7 @@ Future<void> runLocationCycle(ServiceInstance service) async {
     'longitude': position?.longitude,
     'updatedAt': updatedAt,
     'rowsAffected': affectedRows,
+    'firebaseSynced': firebaseSynced,
   });
 }
 

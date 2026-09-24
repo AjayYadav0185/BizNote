@@ -24,6 +24,9 @@ dependencies:
   sqflite_common_ffi: ^2.4.3
   sqflite_common_ffi_web: ^1.2.0
   path_provider: ^2.1.6
+  # Firebase: app bootstrap + Realtime Database mirror of every tracker fix.
+  firebase_core: ^4.15.0
+  firebase_database: ^12.6.0
 
 dev_dependencies:
   flutter_test:

@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "914724512933",
+    "firebase_url": "https://bizarohq-b92c8-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "bizarohq-b92c8",
+    "storage_bucket": "bizarohq-b92c8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:914724512933:android:6bae8470538e660b7d994c",
+        "android_client_info": {
+          "package_name": "com.biznote.notepad_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBLXcEWIGyoPZyPGTfpTiqgtERgqO04ocg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:914724512933:android:ee75079a62f49efd7d994c",
+        "android_client_info": {
+          "package_name": "com.company.bizarohq"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBLXcEWIGyoPZyPGTfpTiqgtERgqO04ocg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

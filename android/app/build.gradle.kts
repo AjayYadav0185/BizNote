@@ -4,6 +4,15 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Firebase: the Google Services plugin turns google-services.json into the
+// Android resources firebase_core reads at startup (app id, api key, project
+// id, database url). It is applied only when the file is present: without it
+// the plugin fails every build with "File google-services.json is missing",
+// which would block development until the config file is uploaded.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     namespace = "com.biznote.notepad_app"
     compileSdk = flutter.compileSdkVersion

@@ -17,6 +17,10 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Networking. Only the debug/profile manifests declared this before, so a
+         release APK could not reach Firebase at all. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- The tracker degrades gracefully without a GPS receiver, so it is not
          a hard requirement. -->
     <uses-feature

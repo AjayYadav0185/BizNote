@@ -39,6 +39,11 @@ app.*.symbols
 # Obfuscation related
 app.*.map.json
 
+# Firebase config — contains project credentials, keep it out of the repo.
+# Re-download it from the Firebase console whenever a fresh copy is needed.
+/android/app/google-services.json
+/ios/Runner/GoogleService-Info.plist
+
 # Android Studio will place build artifacts here
 /android/app/debug
 /android/app/profile

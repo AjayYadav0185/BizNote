@@ -49,6 +49,63 @@ Android/iOS; the guard is `isBackgroundTrackingSupported` in
 `lib/services/background_service.dart`. On web/desktop the seeded tracker note is
 an ordinary, editable note and no permission dialog is shown.
 
+## Firebase location sync (Android)
+
+Every tracker cycle also mirrors its fix to Firebase Realtime Database, so
+the position can be read from the Firebase console or a dashboard without
+the phone:
+
+```
+locations/
+  latest/   <- newest cycle, overwritten every time
+  history/  <- append-only trail, one push key per cycle
+```
+
+Fields: `status`, `hasFix`, `updatedAt` (`yyyy-MM-dd HH:mm:ss`),
+`timestampMillis` and, when a fix exists, `latitude`, `longitude`,
+`accuracy`, `altitude`, `speed`, `heading`. Coordinate fields are omitted
+when there is no fix, so a `set` clears stale coordinates instead of
+leaving the previous ones behind.
+
+### One-time setup
+
+1. In the Firebase console, add an Android app with the package name
+   `com.biznote.notepad_app`.
+2. Create the **Realtime Database** *before* downloading (or re-downloading)
+   `google-services.json`, so the file contains `project_info/firebase_url`.
+   Without it the Android SDK guesses
+   `https://<project-id>-default-rtdb.firebaseio.com`, which is wrong for
+   databases outside us-central1.
+3. Save the file as `android/app/google-services.json`. Gradle applies the
+   Google Services plugin (see `android/build.gradle.kts` +
+   `android/app/build.gradle.kts`) only while that file exists — until then
+   the app still builds, and Firebase is skipped with a
+   `[Firebase] initialization failed` log line.
+4. Start in **test mode** rules while developing:
+
+   ```json
+   {
+     "rules": {
+       "locations": { ".read": true, ".write": true }
+     }
+   }
+   ```
+
+   Open rules mean anyone with the database URL can read and write. Add
+   Firebase Auth and lock the rules down before shipping.
+5. `flutter run` — the log shows `[Firebase] location pushed · status=Active`
+   on success, or the exact reason on failure (rules, database URL, network).
+
+Implementation: `lib/services/firebase_location_service.dart`, called once
+per cycle from `runLocationCycle` (covers the 15 minute loop, "Update Now"
+and the iOS background fetch). It is fail-soft: the local note is written
+first and the network wait is capped at 15 seconds. The main manifest now
+also declares `INTERNET` (it was debug/profile only, so release APKs could
+not have reached Firebase).
+
+iOS: add `GoogleService-Info.plist` to `ios/Runner/` in Xcode (same Firebase
+project, iOS bundle id); the same Dart code path is used.
+
 ## Note order
 
 Rows are reordered by dragging the handle on the right edge of a row (long press

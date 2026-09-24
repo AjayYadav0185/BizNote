@@ -1,3 +1,17 @@
+// Firebase: classpath for the Google Services plugin. It is applied
+// conditionally by android/app/build.gradle.kts, and only once
+// android/app/google-services.json exists — that way the project still
+// builds before the Firebase config file is dropped in.
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.google.gms:google-services:4.5.0")
+    }
+}
+
 allprojects {
     repositories {
         google()
