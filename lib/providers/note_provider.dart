@@ -7,6 +7,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import '../database/database_helper.dart';
 import '../models/note.dart';
 import '../services/background_service.dart';
+import '../services/firebase_note_service.dart';
 import '../utils/date_formatter.dart';
 
 /// Bridges the SQLite `notes` table to the widget tree.
@@ -15,13 +16,23 @@ import '../utils/date_formatter.dart';
 /// connection, so this notifier pulls the rows back in whenever the service
 /// broadcasts an update, whenever the app is resumed, and through a slow
 /// safety-net poll for the cases where the event channel is missed.
+///
+/// Every successful write is additionally mirrored into Firebase Realtime
+/// Database through [FirebaseNoteService] (`notes/<id>`). SQLite remains the
+/// source of truth and the mirror is fail-soft: an offline device or a locked
+/// database rule only logs, the local save is already on disk at that point.
 class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
-  /// [databaseHelper] and [enableBackgroundSync] exist for tests: production
-  /// code uses the defaults (the shared singleton + the live service stream).
+  /// [databaseHelper], [firebaseService] and the two flags exist for tests:
+  /// production code uses the defaults (the shared singleton, the real cloud
+  /// mirror and the live background service stream).
   NoteProvider({
     DatabaseHelper? databaseHelper,
+    FirebaseNoteService? firebaseService,
     bool enableBackgroundSync = true,
-  }) : _databaseHelper = databaseHelper ?? DatabaseHelper.instance {
+    bool enableFirebaseSync = true,
+  })  : _databaseHelper = databaseHelper ?? DatabaseHelper.instance,
+        _firebaseService = firebaseService ?? const FirebaseNoteService(),
+        _enableFirebaseSync = enableFirebaseSync {
     if (enableBackgroundSync) {
       unawaited(startBackgroundSync());
     }
@@ -32,6 +43,8 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _safetyNetInterval = Duration(seconds: 30);
 
   final DatabaseHelper _databaseHelper;
+  final FirebaseNoteService _firebaseService;
+  final bool _enableFirebaseSync;
   final FlutterBackgroundService _backgroundService = FlutterBackgroundService();
 
   List<Note> _allNotes = <Note>[];
@@ -91,6 +104,8 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
           .listen((Map<String, dynamic>? event) {
         debugPrint('[UI] service update received: $event');
         unawaited(refreshFromDatabase());
+        // The cycle rewrote the tracked note, so its cloud record is stale.
+        unawaited(_mirrorTrackedNote());
       });
 
       _safetyNetTimer = Timer.periodic(_safetyNetInterval, (Timer timer) {
@@ -107,8 +122,11 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     // Coming back to the foreground: reconcile with the database and ask for a
-    // fresh fix instead of waiting for the next 15 minute tick.
+    // fresh fix instead of waiting for the next 15 minute tick. The tracker
+    // note may have been rewritten while the app was in the background, so its
+    // cloud record is refreshed too.
     unawaited(refreshFromDatabase());
+    unawaited(_mirrorTrackedNote());
     requestImmediateLocationUpdate();
   }
 
@@ -145,11 +163,17 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ---------------------------------------------------------------------------
 
   /// First read, with a loading flag for the initial build.
+  ///
+  /// A successful read also uploads the whole notebook once
+  /// ([syncNotesToFirebase]), which is what takes records that were written
+  /// while the cloud was unreachable into Firebase. A failed read does **not**
+  /// sync: an empty list is a broken connection, not an empty notebook.
   Future<void> loadNotes() async {
     _isLoading = true;
     notifyListeners();
     try {
       _allNotes = await _databaseHelper.getNotes();
+      unawaited(_mirrorAllNotes());
     } catch (error) {
       debugPrint('[UI] loading notes failed: $error');
       _allNotes = <Note>[];
@@ -183,6 +207,9 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Callers (the editor) use the returned instance to stay in sync, so a later
   /// save in the same session updates that row instead of inserting a second
   /// copy of it.
+  ///
+  /// The stored record is mirrored to Firebase right after the local commit
+  /// (fire and forget: the user never waits for the network).
   Future<Note?> saveNote(Note note) async {
     final String updatedAt = DateFormatter.formatForStorage(DateTime.now());
     final Note stamped = note.copyWith(updatedAt: updatedAt);
@@ -197,12 +224,18 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Hand back the row as it was actually stored: it carries the id SQLite
         // assigned *and* the `sortOrder` the list put it at, so a later save in
         // the same session keeps the note exactly where the user sees it.
-        return _noteInMemory(id) ?? stamped.copyWith(id: id);
+        final Note stored = _noteInMemory(id) ?? stamped.copyWith(id: id);
+        unawaited(_mirrorNote(stored));
+        return stored;
       }
 
       final int rows = await _databaseHelper.updateNote(stamped);
       await refreshFromDatabase();
-      return rows > 0 ? stamped : null;
+      if (rows <= 0) {
+        return null;
+      }
+      unawaited(_mirrorNote(stamped));
+      return stamped;
     } catch (error) {
       debugPrint('[UI] saving note failed: $error');
       return null;
@@ -219,6 +252,10 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
       ),
     );
     await refreshFromDatabase();
+    final Note? created = _noteInMemory(id);
+    if (created != null) {
+      unawaited(_mirrorNote(created));
+    }
     return id;
   }
 
@@ -232,6 +269,9 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final int rows = await _databaseHelper.deleteNote(id);
       await refreshFromDatabase();
+      if (rows > 0) {
+        unawaited(_forgetNote(id));
+      }
       return rows > 0;
     } catch (error) {
       debugPrint('[UI] deleting note $id failed: $error');
@@ -307,8 +347,95 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
             if (note.id != null) note.id!,
         ],
       );
+      // Every row was renumbered, so the cloud copy of each record changed.
+      unawaited(_mirrorAllNotes());
     } catch (error) {
       debugPrint('[UI] persisting the new note order failed: $error');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Firebase mirror
+  // ---------------------------------------------------------------------------
+
+  /// Uploads the whole notebook to Firebase Realtime Database (`notes/<id>`) and
+  /// returns the number of records that were sent, or `null` when the sync
+  /// failed (no configuration, no network, locked database rules).
+  ///
+  /// This is what the cloud button in the list calls. The automatic mirror after
+  /// a read/save/delete uses the same service but ignores the result, because a
+  /// failed cloud write must never surface as a failed save.
+  Future<int?> syncNotesToFirebase() async {
+    if (!_enableFirebaseSync) {
+      debugPrint('[UI] the Firebase mirror is disabled');
+      return null;
+    }
+    // Re-read first so the upload contains what is really on disk, including
+    // rows the background isolate wrote since the last refresh.
+    await refreshFromDatabase();
+    final List<Note> notes = _allNotes;
+    if (notes.isEmpty) {
+      return null;
+    }
+    final bool pushed = await _firebaseService.syncNotes(notes);
+    if (!pushed) {
+      return null;
+    }
+    return notes
+        .where((Note note) => note.id != null)
+        .length;
+  }
+
+  /// Pushes one record (`notes/<id>`) without blocking the caller.
+  Future<void> _mirrorNote(Note note) async {
+    if (!_enableFirebaseSync) {
+      return;
+    }
+    try {
+      await _firebaseService.saveNote(note);
+    } catch (error) {
+      debugPrint('[UI] Firebase mirror of note ${note.id} failed: $error');
+    }
+  }
+
+  /// Removes the cloud record of a deleted note.
+  Future<void> _forgetNote(int id) async {
+    if (!_enableFirebaseSync) {
+      return;
+    }
+    try {
+      await _firebaseService.deleteNote(id);
+    } catch (error) {
+      debugPrint('[UI] Firebase mirror could not remove note $id: $error');
+    }
+  }
+
+  /// Replaces `notes` with the current notebook in one write.
+  Future<void> _mirrorAllNotes() async {
+    if (!_enableFirebaseSync || _allNotes.isEmpty) {
+      return;
+    }
+    try {
+      await _firebaseService.syncNotes(_allNotes);
+    } catch (error) {
+      debugPrint('[UI] Firebase mirror of the notebook failed: $error');
+    }
+  }
+
+  /// Mirrors just the tracked note, whose body the background service rewrites
+  /// on every cycle.
+  Future<void> _mirrorTrackedNote() async {
+    if (!_enableFirebaseSync) {
+      return;
+    }
+    try {
+      final Note? tracked =
+          await _databaseHelper.getNoteById(Note.fixedNoteId);
+      if (tracked != null) {
+        await _firebaseService.saveNote(tracked);
+      }
+    } catch (error) {
+      debugPrint('[UI] Firebase mirror of the tracked note failed: $error');
     }
   }
 

@@ -1,10 +1,12 @@
 # BizNote (notepad_app)
 
 An offline, iOS-style notes app built with Flutter. Notes live in a local SQLite
-database (`notepad.db`). The list can be reordered by dragging a row's handle,
-and the order is stored in the database. On Android/iOS a persistent background
-service keeps a single "📍 Live Location Tracker" note up to date every 15
-minutes, even while the app is closed.
+database (`notepad.db`) and are mirrored to Firebase Realtime Database
+(`notes/<id>`), so the records can be read from the Firebase console or a
+dashboard without the phone. The list can be reordered by dragging a row's
+handle, and the order is stored in the database. On Android/iOS a persistent
+background service keeps a single "📍 Live Location Tracker" note up to date
+every 15 minutes, even while the app is closed.
 
 ## Running
 
@@ -42,6 +44,7 @@ note list stays empty ("loading notes failed").
 | --- | --- | --- | --- |
 | Create, edit, delete, search notes | yes | yes | yes (IndexedDB) |
 | Drag a note to reorder the list | yes | yes | yes (IndexedDB) |
+| Mirror every note to Firebase (`notes/<id>`) | yes | yes | yes (needs a web app registration, see below) |
 | 15 minute location tracker note | yes | no | no |
 
 `flutter_background_service` and the location permission flow only exist on
@@ -86,7 +89,8 @@ leaving the previous ones behind.
    ```json
    {
      "rules": {
-       "locations": { ".read": true, ".write": true }
+       "locations": { ".read": true, ".write": true },
+       "notes": { ".read": true, ".write": true }
      }
    }
    ```
@@ -105,6 +109,67 @@ not have reached Firebase).
 
 iOS: add `GoogleService-Info.plist` to `ios/Runner/` in Xcode (same Firebase
 project, iOS bundle id); the same Dart code path is used.
+
+## Firebase notes sync
+
+Separately from the tracker, every note is mirrored to Firebase Realtime
+Database, keyed by the primary key of the local `notes` table:
+
+```
+notes/
+  <note id>/
+    id, title, content, updatedAt, updatedAtMillis,
+    sortOrder, isTracker, syncedAt, syncedAtMillis
+```
+
+- `updatedAt` is the record's timestamp in `yyyy-MM-dd HH:mm:ss`, exactly the
+  string the SQLite row holds; `updatedAtMillis` is its millisecond twin and
+  `syncedAt`/`syncedAtMillis` describe when the phone pushed the record, which
+  is what makes a stale mirror visible from a dashboard.
+- `sortOrder` is the position in the hand ordered list and `isTracker` marks the
+  note the background location service owns. A row without an id (a note that
+  was never saved) cannot be addressed and is skipped.
+
+| What happens | Cloud write |
+| --- | --- |
+| App start, first successful read | the whole `notes` node, in one write |
+| Saving or creating a note | `notes/<id>` |
+| Deleting a note | `notes/<id>` removed |
+| Reordering (drag handle) | the whole `notes` node (every `sortOrder` changed) |
+| Background location cycle while the app is open | `notes/1` (the tracker row) |
+| Cloud button in the bottom bar | the whole `notes` node, then a result dialog |
+
+SQLite stays the source of truth (the app is offline first), so this is a
+one-way mirror: there is no pull/restore yet. The writes are fail-soft — a
+missing configuration, a locked rule or no network logs a
+`[Firebase] ... failed` line and returns `false` instead of throwing, because
+the local save is already on disk at that point. Replacing the whole node is
+deliberate: it prunes records that were deleted locally while offline. An
+**empty** notebook is never pushed, since an empty list means the local read
+failed, not that the user deleted everything.
+
+The cloud button next to the compose button in the list triggers the same sync
+manually and reports how many records went out; it is the quick way to verify
+the rules and the connection from the phone.
+
+Implementation: `lib/services/firebase_note_service.dart` (the payload builders
+are pure and covered by `test/firebase_note_payload_test.dart`, the provider
+side by `test/note_cloud_sync_test.dart`), hooked into every write path in
+`lib/providers/note_provider.dart`.
+
+Firebase is initialized once per isolate in `lib/services/firebase_bootstrap.dart`:
+Android/iOS use the native config file, and every other platform (web, desktop,
+or an Android build without `google-services.json`) falls back to the project
+values spelled out there — including the region specific database URL
+
+```
+https://bizarohq-b92c8-default-rtdb.asia-southeast1.firebasedatabase.app
+```
+
+On the web that fallback is what makes the mirror work without extra files;
+register a Firebase **web app** in the same project (or call
+`firebase.initializeApp({...})` inline in `web/index.html`) if you later add
+Auth/Analytics, and keep the `notes` rules above open for the origin.
 
 ## Note order
 
@@ -135,12 +200,16 @@ looks exactly as it did before: newest first.
   persisted by `updateNoteOrder` as one batched renumbering, so a drop either
   writes the whole order or nothing at all.
 - `lib/providers/note_provider.dart` - bridges the table to the widget tree
-  (`ChangeNotifier`) and listens for background-service updates. `reorderNotes`
-  moves the row in memory first and persists right after.
+  (`ChangeNotifier`), listens for background-service updates and mirrors every
+  successful write to Firebase (`syncNotesToFirebase` is the manual entry point).
+  `reorderNotes` moves the row in memory first and persists right after.
 - `lib/screens/` - iOS-style list (`home_screen`) and editor (`editor_screen`).
   The list is a `SliverReorderableList` (`onReorderItem`) whose rows carry a
   `ValueKey` on the note id.
-- `lib/services/` - location access plus the Android/iOS background service.
+- `lib/services/` - location access plus the Android/iOS background service, and
+  the Firebase mirror: `firebase_bootstrap.dart` (one init per isolate),
+  `firebase_note_service.dart` (notes) and `firebase_location_service.dart`
+  (tracker fixes).
 
 ## Tests
 

@@ -1,11 +1,11 @@
 import 'dart:async';
 
-import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../utils/date_formatter.dart';
+import 'firebase_bootstrap.dart';
 
 /// Pushes every tracker fix to Firebase Realtime Database.
 ///
@@ -44,33 +44,12 @@ class FirebaseLocationService {
 
   /// One initialization attempt per isolate — both success *and* failure are
   /// cached, so a missing config file logs once instead of on every cycle.
-  static Future<bool>? _initialization;
-
-  /// Initializes Firebase for the **current isolate**.
   ///
-  /// Every isolate that talks to Firebase needs its own call: the background
-  /// service isolate does this lazily on its first cycle. On Android every
-  /// option (app id, api key, project id, database url) is read from the
-  /// resources the Google Services plugin generated out of
-  /// `google-services.json`, so no explicit [FirebaseOptions] are required.
-  static Future<bool> ensureInitialized() => _initialization ??= _initialize();
-
-  static Future<bool> _initialize() async {
-    try {
-      await Firebase.initializeApp();
-      debugPrint(
-        '[Firebase] initialized · '
-        'databaseURL=${Firebase.app().options.databaseURL ?? "from google-services.json"}',
-      );
-      return true;
-    } catch (error) {
-      debugPrint(
-        '[Firebase] initialization failed — is google-services.json in '
-        'android/app/ and the package name com.biznote.notepad_app? · $error',
-      );
-      return false;
-    }
-  }
+  /// The attempt itself lives in [FirebaseBootstrap], which the note mirror
+  /// uses as well: two independent initializations in the same isolate would
+  /// race each other for the default app.
+  static Future<bool> ensureInitialized() =>
+      FirebaseBootstrap.ensureInitialized();
 
   /// Writes one cycle to `locations/latest` and appends it to
   /// `locations/history`. Returns `true` only when both writes landed.

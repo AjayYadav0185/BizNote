@@ -29,6 +29,11 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
+  /// True while the manual cloud sync is in flight: the button swaps its icon
+  /// for a spinner, and a second tap is ignored (the write can wait up to the
+  /// service timeout when the device is offline).
+  bool _isSyncing = false;
+
   @override
   void initState() {
     super.initState();
@@ -390,12 +395,73 @@ class _HomeScreenState extends State<HomeScreen> {
           CupertinoButton(
             minimumSize: Size.zero,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            onPressed: _syncToFirebase,
+            child: _isSyncing
+                ? const CupertinoActivityIndicator(radius: 9)
+                : Icon(
+                    CupertinoIcons.cloud_upload,
+                    size: 22,
+                    color: _resolveColor(CupertinoColors.secondaryLabel),
+                  ),
+          ),
+          CupertinoButton(
+            minimumSize: Size.zero,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             onPressed: () => _openEditor(),
             child: Icon(
               CupertinoIcons.square_pencil,
               size: 25,
               color: _theme.primaryColor,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Uploads every record to Firebase Realtime Database and reports the result.
+  ///
+  /// Notes are mirrored automatically after each save/delete/reorder; this
+  /// button exists for the first push (after fixing the Realtime Database rules,
+  /// say) and to verify from the phone that the cloud copy is up to date.
+  Future<void> _syncToFirebase() async {
+    if (_isSyncing) {
+      return;
+    }
+    final NoteProvider provider = context.read<NoteProvider>();
+    setState(() => _isSyncing = true);
+
+    int? pushed;
+    try {
+      pushed = await provider.syncNotesToFirebase();
+    } finally {
+      if (mounted) {
+        setState(() => _isSyncing = false);
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    await showCupertinoDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) => CupertinoAlertDialog(
+        title: const Text('Firebase'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            pushed == null
+                ? 'The notes could not be uploaded. Check the Realtime '
+                    'Database rules and the connection.'
+                : '$pushed ${pushed == 1 ? 'note' : 'notes'} saved to "notes/".',
+          ),
+        ),
+        actions: <Widget>[
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('OK'),
           ),
         ],
       ),
