@@ -47,7 +47,36 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   final DatabaseHelper _databaseHelper;
   final FirebaseNoteService _firebaseService;
   final bool _enableFirebaseSync;
-  final FlutterBackgroundService _backgroundService = FlutterBackgroundService();
+
+  /// The background service instance is owned by [initializeBackgroundService]
+  /// in [background_service.dart], NOT here. Keeping it here caused a crash on
+  /// Android 7 because the plugin's factory asserts it must only run in the
+  /// main (UI) isolate, and the singleton was being recreated across isolates.
+  static FlutterBackgroundService? _backgroundService;
+  static bool _backgroundServiceInitialized = false;
+
+  /// Obtain the background service instance that was created in
+  /// [initializeBackgroundService] (called from main()). Returns null if the
+  /// service has not been initialised yet or if background tracking is not
+  /// supported on this platform.
+  static FlutterBackgroundService? get backgroundService {
+    if (!_backgroundServiceInitialized) {
+      return null;
+    }
+    return _backgroundService;
+  }
+
+  /// Set the background service instance. Used internally by
+  /// [initializeBackgroundService].
+  static void set backgroundService(FlutterBackgroundService? service) {
+    _backgroundService = service;
+  }
+
+  static bool get isBackgroundServiceReady => _backgroundServiceInitialized;
+
+  static set backgroundServiceInitialized(bool initialized) {
+    _backgroundServiceInitialized = initialized;
+  }
 
   List<Note> _allNotes = <Note>[];
   String _searchQuery = '';
@@ -186,8 +215,8 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Primary trigger: the service isolate invokes `update` every time it
       // rewrote the tracked note.
-      _serviceSubscription = _backgroundService
-          .on(BackgroundServiceMethod.update)
+      _serviceSubscription = backgroundService
+          ?.on(BackgroundServiceMethod.update)
           .listen((Map<String, dynamic>? event) {
         debugPrint('[UI] service update received: $event');
         unawaited(refreshFromDatabase());
@@ -221,11 +250,11 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   ///
   /// Does nothing where there is no service to talk to (web/desktop).
   void requestImmediateLocationUpdate() {
-    if (!isBackgroundTrackingSupported) {
+    if (!isBackgroundTrackingSupported || backgroundService == null) {
       return;
     }
     try {
-      _backgroundService.invoke(BackgroundServiceMethod.refreshLocation);
+      backgroundService!.invoke(BackgroundServiceMethod.refreshLocation);
     } catch (error) {
       debugPrint('[UI] could not reach the background service: $error');
     }
@@ -235,11 +264,11 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   ///
   /// Does nothing where there is no service to talk to (web/desktop).
   void pauseLocationTracking() {
-    if (!isBackgroundTrackingSupported) {
+    if (!isBackgroundTrackingSupported || backgroundService == null) {
       return;
     }
     try {
-      _backgroundService.invoke(BackgroundServiceMethod.stopService);
+      backgroundService!.invoke(BackgroundServiceMethod.stopService);
     } catch (error) {
       debugPrint('[UI] could not stop the background service: $error');
     }

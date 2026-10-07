@@ -10,6 +10,7 @@ import '../database/database_helper.dart';
 import '../models/device_profile.dart';
 import '../models/note.dart';
 import '../utils/date_formatter.dart';
+import '../providers/note_provider.dart';
 import 'firebase_location_service.dart';
 import 'location_service.dart';
 
@@ -54,6 +55,12 @@ const String kNotificationTitle = 'BizNote · Live Location';
 /// on iOS it registers the `BGTaskScheduler` handler.
 Future<void> initializeBackgroundService() async {
   final FlutterBackgroundService service = FlutterBackgroundService();
+
+  // Cache the instance in NoteProvider so the UI isolate can communicate with
+  // the background service without creating a second instance (which crashed
+  // on Android 7 with the plugin's "only used in main isolate" assertion).
+  NoteProvider.backgroundService = service;
+  NoteProvider.backgroundServiceInitialized = true;
 
   await service.configure(
     androidConfiguration: AndroidConfiguration(
