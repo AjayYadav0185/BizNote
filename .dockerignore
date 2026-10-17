@@ -12,7 +12,7 @@ build/
 logs/
 coverage/
 
-# Test suite (not needed to build the web app)
+# Test suite (not needed to build the web app) check only
 test/
 
 # IDE / OS cruft
