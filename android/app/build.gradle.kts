@@ -28,10 +28,20 @@ android {
         applicationId = "com.biznote.notepad_app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // Pinned to 24 (Android 7.0) so aftermarket TS07 head units (API 24/25,
+        // almost always 32-bit armeabi-v7a, 1-2 GB RAM, often no GPS / no Play
+        // Services) can install the app. Do NOT raise this without dropping
+        // Android 7 support. flutter.minSdkVersion is already 24 on this
+        // Flutter version — the literal pin just makes the guarantee explicit.
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // TS07 stereos are 32-bit. Without this the release APK only ships
+        // arm64-v8a libflutter.so/libapp.so ("App not installed" on TS07).
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     buildTypes {
