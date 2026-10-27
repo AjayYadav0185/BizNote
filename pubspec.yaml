@@ -23,13 +23,17 @@ dependencies:
   flutter_background_service: ^5.1.0
 
   # AirTag-style BLE beacon broadcaster for offline tracking (Android + iOS).
-  beacon_broadcast: ^0.3.1
+  # Upgraded to dchs_flutter_beacon because beacon_broadcast 0.3.1 is
+  # incompatible with modern Flutter (built-in Kotlin) - it uses old Kotlin 1.6.10
+  # and compileSdk 28 which fails on Flutter 3.27+.
+  # dchs_flutter_beacon is actively maintained and ported to modern Kotlin.
+  dchs_flutter_beacon: ^0.6.10
   sqflite_common_ffi: ^2.4.3
   sqflite_common_ffi_web: ^1.2.0
   path_provider: ^2.1.6
   # Firebase: app bootstrap + Realtime Database mirror of every tracker fix.
-  firebase_core: ^4.15.0
-  firebase_database: ^12.6.0
+  firebase_core: ^5.1.0
+  firebase_database: ^13.0.1
 
 dev_dependencies:
   flutter_test:

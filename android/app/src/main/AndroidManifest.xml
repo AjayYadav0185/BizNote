@@ -19,20 +19,24 @@
     <!-- Required for Bluetooth scanning/advertising on Android 12+ (API 31+). -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
 
-    <!-- The beacon broadcaster is a low-power peripheral advertiser: the phone
-         does not need GPS to broadcast. The existing location tracking above
-         (fine-grained location permissions) still keeps the tracker note alive. -->
+    <!-- Required for BLE beacon transmission (iBeacon format).
+         Location permissions are required for background transmission. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <uses-feature
-        android:name="android.hardware.bluetooth"
-        android:required="false" />
+        android:name="android.hardware.bluetooth_le"
+        android:required="true" />
 
     <!-- Keep the service alive across reboots and doze, and show the ongoing
          notification that Android requires for foreground services. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Networking. Only the debug/profile manifests declared this before, so a
          release APK could not reach Firebase at all. -->

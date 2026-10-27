@@ -15,6 +15,10 @@ analyzer:
   # tests and examples that are not part of this app.
   exclude:
     - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - macos/**
 
 linter:
   # The lint rules applied to this project can be customized in the
