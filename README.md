@@ -280,3 +280,58 @@ looks exactly as it did before: newest first.
 flutter test
 ```
 
+## BLE beacon broadcaster (offline tracking for the car stereo)
+
+This app can broadcast a static UUID over BLE (Bluetooth Low Energy) as a
+manufacturer-data payload so a paired car stereo can track the phone/tablet as
+an AirTag-style device — while the app stays completely hidden in the
+background.
+
+### Setup
+
+1. `beacon_broadcast` is already a dependency (`pubspec.yaml`).
+2. (Android) Bluetooth permissions are declared in
+   `android/app/src/main/AndroidManifest.xml`.
+3. Grant location access "Always" (required by `flutter_background_service`
+   for the persistent foreground service that carries the broadcaster) and open
+   the phone's Bluetooth settings once.
+
+### How it broadcasts
+
+`lib/services/ble_beacon_service.dart` wraps the `beacon_broadcast` plugin.
+The broadcaster runs inside the persistent foreground service started by
+`lib/services/background_service.dart` (`autoStartOnBoot: true`), so it starts
+when the device boots and keeps advertising through Android's Doze/App Standby
+with an ongoing (silent) notification.
+
+The static UUID is defined by [kBleBeaconUuid] in
+`lib/services/ble_beacon_service.dart`. Replace it with the exact 128-bit UUID
+your car stereo expects — BLE libraries require a full
+`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` UUID, not a free-form string.
+`kBleBeaconLayout` controls the beacon frame; set it to a custom AltBeacon
+layout to advertise arbitrary manufacturer-data bytes instead of a standard
+AltBeacon frame.
+
+### Android background limitation (important)
+
+Android 8+ stops a background BLE advertiser after ~10 minutes. `BleBeaconService`
+mitigates this with a periodic watchdog that re-starts the advertiser if it was
+killed, and the foreground service keeps the process alive with an ongoing
+notification. It cannot guarantee uninterrupted advertising across deep-sleep or
+head-unit restart events (the radio is offline until the device wakes). For a
+permanent tracker, keep the phone plugged in and consider an actual hardware
+beacon.
+
+### File layout
+
+- `lib/services/ble_beacon_service.dart` — the BLE broadcaster (wraps
+  `beacon_broadcast`; manages start/stop/watchdog).
+- `lib/services/background_service.dart` — wires the broadcaster into the
+  persistent `flutter_background_service` foreground service.
+- `lib/providers/note_provider.dart` — holds the current `BleBeaconService`
+  instance so the UI can observe its state.
+- `android/app/src/main/AndroidManifest.xml` — Bluetooth permissions + BLE
+  `uses-feature`.
+- `ios/Runner/Info.plist` — Bluetooth usage descriptions (iOS can only
+  advertise while the app is in the foreground).
+

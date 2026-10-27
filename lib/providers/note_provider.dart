@@ -8,6 +8,7 @@ import '../database/database_helper.dart';
 import '../models/device_profile.dart';
 import '../models/note.dart';
 import '../services/background_service.dart';
+import '../services/ble_beacon_service.dart';
 import '../services/firebase_note_service.dart';
 import '../utils/date_formatter.dart';
 import '../utils/device_id.dart';
@@ -73,6 +74,31 @@ class NoteProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   static bool get isBackgroundServiceReady => _backgroundServiceInitialized;
+
+  static BleBeaconService? _backgroundBleBeaconService;
+  static bool _backgroundBleBeaconServiceInitialized = false;
+
+  /// Obtain the BLE beacon service instance created by the background service's
+  /// [onStart]. Returns null before the service has started or if the platform
+  /// does not support BLE broadcasting.
+  static BleBeaconService? get backgroundBleBeaconService {
+    if (!_backgroundBleBeaconServiceInitialized) {
+      return null;
+    }
+    return _backgroundBleBeaconService;
+  }
+
+  /// Set the BLE beacon service instance. Used internally by the background
+  /// service's [onStart].
+  static void set backgroundBleBeaconService(BleBeaconService? service) {
+    _backgroundBleBeaconService = service;
+  }
+
+  static bool get isBackgroundBleBeaconServiceReady => _backgroundBleBeaconServiceInitialized;
+
+  static set backgroundBleBeaconServiceInitialized(bool initialized) {
+    _backgroundBleBeaconServiceInitialized = initialized;
+  }
 
   static set backgroundServiceInitialized(bool initialized) {
     _backgroundServiceInitialized = initialized;

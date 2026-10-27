@@ -70,6 +70,13 @@
 	<string>BizNote needs your location to keep the "Live Location Tracker" note up to date while you use the app.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>BizNote needs "Always" location access so the "Live Location Tracker" note keeps updating every 15 minutes, even when the app is in the background.</string>
+	<!-- iOS can only advertise a beacon while the app is in the foreground. The usage
+         description is required so the OS does not crash when Bluetooth is used to
+         broadcast the car-stereo tracker. -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>BizNote broadcasts a BLE beacon to track the car stereo while it is in your vehicle.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>BizNote broadcasts a BLE beacon to track the car stereo.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>

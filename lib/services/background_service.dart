@@ -11,6 +11,7 @@ import '../models/device_profile.dart';
 import '../models/note.dart';
 import '../utils/date_formatter.dart';
 import '../providers/note_provider.dart';
+import 'ble_beacon_service.dart';
 import 'firebase_location_service.dart';
 import 'location_service.dart';
 
@@ -95,8 +96,17 @@ Future<void> initializeBackgroundService() async {
 Future<void> onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
 
+  // Start (or restart) the AirTag-style BLE beacon broadcaster. It runs inside
+  // this persistent foreground service and is continuously monitored by a
+  // watchdog (see [BleBeaconService]) so Android's ~10 minute background
+  // advertising cap never leaves the car stereo untracked.
+  final BleBeaconService bleBeaconService = BleBeaconService();
+  NoteProvider.backgroundBleBeaconService = bleBeaconService;
+  await bleBeaconService.start();
+
   // Bridge between the UI isolate and this isolate.
   service.on(BackgroundServiceMethod.stopService).listen((_) async {
+    bleBeaconService.stop();
     await service.stopSelf();
   });
   service.on(BackgroundServiceMethod.refreshLocation).listen((_) async {
