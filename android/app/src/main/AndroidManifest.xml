@@ -88,6 +88,20 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Custom receiver: start the foreground location service on boot AND
+             whenever the device gains power (car ignition), so tracking begins
+             without the user having to open the app. -->
+        <receiver
+            android:name=".BootPowerReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
